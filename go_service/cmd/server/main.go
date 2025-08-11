@@ -24,6 +24,7 @@ var logger zerolog.Logger
 
 func setupLogger() zerolog.Logger {
 	// Đảm bảo thư mục tồn tại
+	// handle error
 	os.MkdirAll("logs", os.ModePerm)
 
 	file, err := os.OpenFile("logs/server.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
@@ -71,6 +72,7 @@ func main() {
 	p.Use(r)
 
 	// Ghi log mọi request
+	// put this to middleware package
 	r.Use(func(c *gin.Context) {
 		start := time.Now()
 		c.Next()
@@ -85,6 +87,9 @@ func main() {
 	})
 
 	// CORS middleware
+	// use this instead
+	// https://github.com/gin-contrib/cors
+	//r.Use(cors.Default()))
 	r.Use(func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", "*")
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
@@ -154,6 +159,7 @@ func main() {
 		protected.PUT("/teams/:teamId", teamHandler.UpdateTeam)
 		protected.DELETE("/teams/:teamId", teamHandler.DeleteTeam)
 
+		// use group routes instead of repeating the same prefix
 		// Team member management
 		protected.POST("/teams/:teamId/members", teamHandler.AddMemberToTeam)
 		protected.DELETE("/teams/:teamId/members/:memberId", teamHandler.RemoveMemberFromTeam)

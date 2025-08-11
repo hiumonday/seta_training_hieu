@@ -27,6 +27,7 @@ func NewAssetHandler(db *gorm.DB) *AssetHandler {
 func (h *AssetHandler) CreateFolder(c *gin.Context) {
 	userID, exists := c.Get("user_id")
 	if !exists {
+		// use custom error to response
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "User ID not found"})
 		return
 	}
@@ -47,6 +48,7 @@ func (h *AssetHandler) CreateFolder(c *gin.Context) {
 		OwnerID:    ownerID,
 	}
 
+	// pass ctx to database.DB.Create
 	if err := h.db.Create(&folder).Error; err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to create folder"})
 		return
