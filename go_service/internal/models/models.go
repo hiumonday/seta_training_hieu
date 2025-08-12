@@ -6,6 +6,8 @@ import (
 	"github.com/google/uuid"
 )
 
+// separate multiple models into different files
+
 // Các kiểu ENUM
 type UserRole string
 

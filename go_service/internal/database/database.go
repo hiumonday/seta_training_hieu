@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 )
 
+// avoid use global variable
 var DB *gorm.DB
 
 func Connect() {
@@ -36,6 +37,7 @@ func Connect() {
 
 	// Auto-migrate ONLY asset-related tables that Go service owns
 	// Not migrate User, Team, or Roster models - they're managed by Node.js service
+	// handle error
 	DB.AutoMigrate(&models.Folder{}, &models.Note{}, &models.FolderShare{}, &models.NoteShare{})
 }
 
