@@ -9,9 +9,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// Claims struct that matches Node.js token payload exactly
+// Claims struct that matches Node.js token payload
 type Claims struct {
-	UserID uuid.UUID `json:"userId"` // Match Node.js payload format
+	UserID uuid.UUID `json:"userId"`
 	jwt.RegisteredClaims
 }
 
