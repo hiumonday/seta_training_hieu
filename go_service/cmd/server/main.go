@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"go_service/internal/database"
-	"go_service/internal/handlers"
-	"go_service/internal/logger"
-	"go_service/internal/middleware"
+
+	// "go_service/internal/logger"
+	// "go_service/internal/middleware"
 	"go_service/internal/router"
 
 	"github.com/gin-gonic/gin"
@@ -21,7 +21,7 @@ import (
 
 func main() {
 
-	logger.InitLogger()
+	// logger.InitLogger()
 
 	// Load environment variables
 	if err := godotenv.Load(); err != nil {
@@ -36,13 +36,11 @@ func main() {
 		log.Fatalf("Fail to connect DB: %v", err)
 	}
 
-	teamHandler := handlers.NewTeamHandler(db)
-
 	// Setup Gin router
 	r := gin.Default()
-	middleware.SetupPrometheus(r)
-	r.Use(middleware.LoggerMiddleware())
-	router.SetupRouter(r, db, teamHandler)
+	// middleware.SetupPrometheus(r)
+	// r.Use(middleware.LoggerMiddleware())
+	router.SetupRouter(r, db)
 
 	port := os.Getenv("PORT")
 	if port == "" {

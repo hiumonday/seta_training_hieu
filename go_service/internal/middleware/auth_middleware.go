@@ -42,14 +42,14 @@ func AuthMiddleware(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		if userResponse == nil || userResponse.User.UserId == "" {
+		if userResponse == nil || userResponse.User.ID == "" {
 			log.Printf("User data is empty for ID: %s", claims.UserID.String())
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found"})
 			c.Abort()
 			return
 		}
 
-		log.Printf("User found: ID=%s, Role=%s", userResponse.User.UserId, userResponse.User.Role)
+		log.Printf("User found: ID=%s, Role=%s", userResponse.User.ID, userResponse.User.Role)
 
 		c.Set("user_id", claims.UserID)
 		c.Set("role", userResponse.User.Role)

@@ -1,70 +1,847 @@
 package handlers
 
 import (
+	"fmt"
+	"log"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"go_service/internal/models"
+	"go_service/internal/services"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
 type TeamHandler struct {
-	db *gorm.DB
+	db          *gorm.DB
+	userService *services.UserService
 }
 
 func NewTeamHandler(db *gorm.DB) *TeamHandler {
-	return &TeamHandler{db: db}
-}
-
-// GetTeams returns all teams (for authenticated users)
-func (h *TeamHandler) GetTeams(c *gin.Context) {
-	var teams []models.Team
-	if err := h.db.Find(&teams).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch teams"})
-		return
+	return &TeamHandler{
+		db:          db,
+		userService: services.NewUserService(),
 	}
-
-	c.JSON(http.StatusOK, teams)
 }
 
-// CreateTeam creates a new team (only managers can create teams)
+// CreateTeam creates a new team with members (only managers can create teams)
 func (h *TeamHandler) CreateTeam(c *gin.Context) {
-	// Check if user is a manager
+	// Lấy vai trò từ context để kiểm tra quyền
 	role, exists := c.Get("role")
 	roleStr, ok := role.(string)
 	if !exists || !ok || strings.ToUpper(roleStr) != "MANAGER" {
+		log.Println("Non-manager user tried to create a team")
 		c.JSON(http.StatusForbidden, gin.H{"error": "Only managers can create teams"})
 		return
 	}
 
 	var req struct {
-		TeamName string `json:"teamName" binding:"required"`
+		TeamName string      `json:"teamName" binding:"required"`
+		UserIDs  []uuid.UUID `json:"userIds"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
+		log.Println("Invalid request body for CreateTeam")
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
 	tx := h.db.Begin()
 
-	// Create team (teamId will be auto-generated as INTEGER)
+	// Tạo team mới
 	team := models.Team{
 		TeamName: req.TeamName,
 	}
 
 	if err := tx.Create(&team).Error; err != nil {
 		tx.Rollback()
+		log.Println("Failed to create team")
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to create team"})
 		return
 	}
 
+	// Thêm người tạo vào team và đặt làm leader
+	userID, exists := c.Get("user_id")
+	if !exists {
+		tx.Rollback()
+		log.Println("User ID not found in context")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	creatorID := userID.(uuid.UUID)
+
+	// Thêm người tạo làm leader
+	leaderRoster := models.Roster{
+		TeamID:   team.ID,
+		UserID:   creatorID,
+		IsLeader: true,
+	}
+
+	if err := tx.Create(&leaderRoster).Error; err != nil {
+		tx.Rollback()
+		log.Println("Failed to create team leader roster entry")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to set team leader"})
+		return
+	}
+
+	// Thêm các thành viên khác vào team
+	addedMembers := []uuid.UUID{creatorID} // Đã thêm người tạo
+	failedMembers := []uuid.UUID{}
+
+	for _, memberID := range req.UserIDs {
+		// Kiểm tra nếu userID đã được thêm vào (tránh thêm trùng)
+		alreadyAdded := false
+		for _, id := range addedMembers {
+			if id == memberID {
+				alreadyAdded = true
+				break
+			}
+		}
+
+		if alreadyAdded {
+			continue
+		}
+
+		if _, err := h.userService.GetUserByID(memberID.String()); err != nil {
+			// User không tồn tại hoặc có lỗi khi gọi service
+			log.Printf("Failed to verify user %s: %v", memberID, err)
+			failedMembers = append(failedMembers, memberID)
+			continue
+		}
+
+		// Thêm user vào team
+		roster := models.Roster{
+			TeamID:   team.ID,
+			UserID:   memberID,
+			IsLeader: false,
+		}
+
+		if err := tx.Create(&roster).Error; err != nil {
+			failedMembers = append(failedMembers, memberID)
+			log.Printf("Failed to add member %s to team: %v", memberID, err)
+			continue
+		}
+
+		addedMembers = append(addedMembers, memberID)
+	}
+
 	tx.Commit()
 
-	c.JSON(http.StatusCreated, gin.H{
+	response := gin.H{
 		"message": "Team created successfully",
 		"team":    team,
+	}
+
+	// Nếu có thành viên không được thêm vào, báo cáo lại
+	if len(failedMembers) > 0 {
+		response["warning"] = "Some members could not be added to the team"
+		response["failedMembers"] = failedMembers
+	}
+
+	c.JSON(http.StatusCreated, response)
+}
+
+func (h *TeamHandler) AddMemberToTeam(c *gin.Context) {
+	currentUserID, exists := c.Get("user_id")
+	if !exists {
+		log.Println("Unauthorized attempt to add team member: missing user_id")
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error":   "Authentication required",
+		})
+		return
+	}
+
+	teamIDStr := c.Param("teamId")
+	teamID, err := strconv.ParseUint(teamIDStr, 10, 64)
+	if err != nil {
+		log.Printf("Invalid team ID format: %s", teamIDStr)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid team ID format",
+		})
+		return
+	}
+
+	// Kiểm tra team tồn tại
+	var team models.Team
+	if err := h.db.First(&team, teamID).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			log.Printf("Team not found: %d", teamID)
+			c.JSON(http.StatusNotFound, gin.H{
+				"success": false,
+				"error":   "Team not found",
+			})
+			return
+		}
+		log.Printf("Database error when finding team: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to verify team",
+		})
+		return
+	}
+
+	// Kiểm tra xem người dùng hiện tại có phải là leader của team hay không
+	var leaderRoster models.Roster
+	if err := h.db.Where("\"teamId\" = ? AND \"userId\" = ? AND \"isLeader\" = ?", teamID, currentUserID, true).First(&leaderRoster).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			log.Printf("User %s attempted to add member to team %d without leadership permission", currentUserID, teamID)
+			c.JSON(http.StatusForbidden, gin.H{
+				"success": false,
+				"error":   "Only team leaders can add members",
+			})
+			return
+		}
+		log.Printf("Database error when checking leadership: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to verify team leadership",
+		})
+		return
+	}
+
+	var req struct {
+		UserIDs []uuid.UUID `json:"userIds" binding:"required,min=1"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		log.Printf("Invalid request body: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid request format",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Bắt đầu transaction
+	tx := h.db.Begin()
+
+	type AddResult struct {
+		UserID     uuid.UUID `json:"userId"`
+		Username   string    `json:"username"`
+		Status     string    `json:"status"`
+		StatusCode int       `json:"-"` // Chỉ dùng nội bộ, không trả về client
+	}
+
+	results := make([]AddResult, 0, len(req.UserIDs))
+	addedCount := 0
+	existingCount := 0
+	failedCount := 0
+
+	processedUsers := make(map[uuid.UUID]bool)
+
+	for _, userID := range req.UserIDs {
+		// Bỏ qua nếu đã xử lý userID này trước đó
+		if processedUsers[userID] {
+			results = append(results, AddResult{
+				UserID:     userID,
+				Status:     "duplicate_in_request",
+				StatusCode: http.StatusBadRequest,
+			})
+			failedCount++
+			continue
+		}
+		processedUsers[userID] = true
+
+		// Kiểm tra user tồn tại qua service
+		userResp, err := h.userService.GetUserByID(userID.String())
+		if err != nil {
+			results = append(results, AddResult{
+				UserID:     userID,
+				Status:     "user_not_found",
+				StatusCode: http.StatusBadRequest,
+			})
+			failedCount++
+			continue
+		}
+
+		// Kiểm tra xem user đã là thành viên của team chưa
+		var existingMember models.Roster
+		if err := h.db.Where("\"teamId\" = ? AND \"userId\" = ?", teamID, userID).First(&existingMember).Error; err == nil {
+			results = append(results, AddResult{
+				UserID:     userID,
+				Username:   userResp.User.Username,
+				Status:     "already_member",
+				StatusCode: http.StatusConflict,
+			})
+			existingCount++
+			continue
+		} else if err != gorm.ErrRecordNotFound {
+			log.Printf("Database error when checking existing membership: %v", err)
+			results = append(results, AddResult{
+				UserID:     userID,
+				Status:     "error_verifying",
+				StatusCode: http.StatusInternalServerError,
+			})
+			failedCount++
+			continue
+		}
+
+		// Thêm user vào team
+		roster := models.Roster{
+			TeamID:   team.ID,
+			UserID:   userID,
+			IsLeader: false, // Mặc định là false
+		}
+
+		if err := tx.Create(&roster).Error; err != nil {
+			log.Printf("Failed to add user %s to team %d: %v", userID, teamID, err)
+			results = append(results, AddResult{
+				UserID:     userID,
+				Status:     "error_adding",
+				StatusCode: http.StatusInternalServerError,
+			})
+			failedCount++
+			continue
+		}
+
+		// Thêm thành công
+		results = append(results, AddResult{
+			UserID:     userID,
+			Username:   userResp.User.Username,
+			Status:     "added_successfully",
+			StatusCode: http.StatusCreated,
+		})
+		addedCount++
+	}
+
+	// Rollback nếu không thêm được thành viên nào
+	if addedCount == 0 {
+		tx.Rollback()
+		log.Printf("No members were added to team %d", teamID)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "No members were added to the team",
+			"results": results,
+		})
+		return
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		log.Printf("Failed to commit transaction: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to save team members data",
+		})
+		return
+	}
+
+	var responseStatus int
+	var successValue bool
+
+	if failedCount == 0 && existingCount == 0 {
+		// Tất cả đều thành công
+		responseStatus = http.StatusCreated
+		successValue = true
+	} else if addedCount > 0 {
+		// Thêm một phần thành công
+		responseStatus = http.StatusPartialContent // 206
+		successValue = true
+	} else {
+		// Không thành công
+		responseStatus = http.StatusBadRequest
+		successValue = false
+	}
+
+	//  Trả về response
+	c.JSON(responseStatus, gin.H{
+		"success": successValue,
+		"message": fmt.Sprintf("Processed %d members: %d added, %d already existing, %d failed",
+			len(req.UserIDs), addedCount, existingCount, failedCount),
+		"data": gin.H{
+			"teamId":     team.ID,
+			"teamName":   team.TeamName,
+			"addedCount": addedCount,
+			"totalCount": len(req.UserIDs),
+			"results":    results,
+		},
+	})
+}
+
+// RemoveMemberFromTeam removes a member from a team
+func (h *TeamHandler) RemoveMemberFromTeam(c *gin.Context) {
+	currentUserID, exists := c.Get("user_id")
+	if !exists {
+		log.Println("Unauthorized attempt to remove team member: missing user_id")
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error":   "Authentication required",
+		})
+		return
+	}
+
+	// Parse team ID
+	teamIDStr := c.Param("teamId")
+	teamID, err := strconv.ParseUint(teamIDStr, 10, 64)
+	if err != nil {
+		log.Printf("Invalid team ID format: %s", teamIDStr)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid team ID format",
+		})
+		return
+	}
+
+	// Parse member ID
+	memberIDStr := c.Param("memberId")
+	memberID, err := uuid.Parse(memberIDStr)
+	if err != nil {
+		log.Printf("Invalid member ID format: %s", memberIDStr)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid member ID format",
+		})
+		return
+	}
+
+	// Check if team exists
+	var team models.Team
+	if err := h.db.First(&team, teamID).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			log.Printf("Team not found: %d", teamID)
+			c.JSON(http.StatusNotFound, gin.H{
+				"success": false,
+				"error":   "Team not found",
+			})
+			return
+		}
+		log.Printf("Database error when finding team: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to verify team",
+		})
+		return
+	}
+
+	// Check if current user is team leader
+	var leaderRoster models.Roster
+	if err := h.db.Where("\"teamId\" = ? AND \"userId\" = ? AND \"isLeader\" = ?", teamID, currentUserID, true).First(&leaderRoster).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			log.Printf("User %s attempted to remove member from team %d without leadership permission", currentUserID, teamID)
+			c.JSON(http.StatusForbidden, gin.H{
+				"success": false,
+				"error":   "Only team leaders can remove members",
+			})
+			return
+		}
+		log.Printf("Database error when checking leadership: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to verify team leadership",
+		})
+		return
+	}
+
+	// Check if member exists in the team
+	var memberRoster models.Roster
+	if err := h.db.Where("\"teamId\" = ? AND \"userId\" = ?", teamID, memberID).First(&memberRoster).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			log.Printf("Member %s not found in team %d", memberID, teamID)
+			c.JSON(http.StatusNotFound, gin.H{
+				"success": false,
+				"error":   "Member not found in this team",
+			})
+			return
+		}
+		log.Printf("Database error when checking member: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to verify team membership",
+		})
+		return
+	}
+
+	// Prevent removing yourself if you're the only leader
+	if memberID == currentUserID.(uuid.UUID) && memberRoster.IsLeader {
+		// Count team leaders
+		var leaderCount int64
+		if err := h.db.Model(&models.Roster{}).Where("\"teamId\" = ? AND \"isLeader\" = ?", teamID, true).Count(&leaderCount).Error; err != nil {
+			log.Printf("Error counting team leaders: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"error":   "Failed to verify team leadership status",
+			})
+			return
+		}
+
+		if leaderCount <= 1 {
+			log.Printf("User %s attempted to remove self as the only leader of team %d", currentUserID, teamID)
+			c.JSON(http.StatusForbidden, gin.H{
+				"success": false,
+				"error":   "Cannot remove yourself as the only team leader. Assign another leader first.",
+			})
+			return
+		}
+	}
+
+	// Remove member
+	if err := h.db.Delete(&memberRoster).Error; err != nil {
+		log.Printf("Failed to remove member %s from team %d: %v", memberID, teamID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to remove member from team",
+		})
+		return
+	}
+
+	// Fetch username for response
+	userResp, _ := h.userService.GetUserByID(memberID.String())
+	username := ""
+	if userResp != nil && userResp.User.Username != "" {
+		username = userResp.User.Username
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Member removed from team successfully",
+		"data": gin.H{
+			"teamId":    team.ID,
+			"teamName":  team.TeamName,
+			"memberId":  memberID,
+			"username":  username,
+			"wasLeader": memberRoster.IsLeader,
+		},
+	})
+}
+
+// AddManagerToTeam promotes a member to team manager/leader
+func (h *TeamHandler) AddManagerToTeam(c *gin.Context) {
+	currentUserID, exists := c.Get("user_id")
+	if !exists {
+		log.Println("Unauthorized attempt to add team manager: missing user_id")
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error":   "Authentication required",
+		})
+		return
+	}
+
+	// Parse team ID
+	teamIDStr := c.Param("teamId")
+	teamID, err := strconv.ParseUint(teamIDStr, 10, 64)
+	if err != nil {
+		log.Printf("Invalid team ID format: %s", teamIDStr)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid team ID format",
+		})
+		return
+	}
+
+	// Check if team exists
+	var team models.Team
+	if err := h.db.First(&team, teamID).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			log.Printf("Team not found: %d", teamID)
+			c.JSON(http.StatusNotFound, gin.H{
+				"success": false,
+				"error":   "Team not found",
+			})
+			return
+		}
+		log.Printf("Database error when finding team: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to verify team",
+		})
+		return
+	}
+
+	// Check if current user is team leader
+	var leaderRoster models.Roster
+	if err := h.db.Where("\"teamId\" = ? AND \"userId\" = ? AND \"isLeader\" = ?", teamID, currentUserID, true).First(&leaderRoster).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			log.Printf("User %s attempted to add manager to team %d without leadership permission", currentUserID, teamID)
+			c.JSON(http.StatusForbidden, gin.H{
+				"success": false,
+				"error":   "Only team leaders can add managers",
+			})
+			return
+		}
+		log.Printf("Database error when checking leadership: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to verify team leadership",
+		})
+		return
+	}
+
+	// Parse request body
+	var req struct {
+		UserIDs []uuid.UUID `json:"userIds" binding:"required,min=1"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		log.Printf("Invalid request body: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid request format",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Process each user
+	type PromoteResult struct {
+		UserID   uuid.UUID `json:"userId"`
+		Username string    `json:"username"`
+		Status   string    `json:"status"`
+	}
+
+	results := make([]PromoteResult, 0, len(req.UserIDs))
+	successCount := 0
+	failedCount := 0
+
+	for _, userID := range req.UserIDs {
+		// Verify user exists
+		userResp, err := h.userService.GetUserByID(userID.String())
+		if err != nil {
+			results = append(results, PromoteResult{
+				UserID: userID,
+				Status: "user_not_found",
+			})
+			failedCount++
+			continue
+		}
+
+		// Check if user is in team
+		var memberRoster models.Roster
+		if err := h.db.Where("\"teamId\" = ? AND \"userId\" = ?", teamID, userID).First(&memberRoster).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				results = append(results, PromoteResult{
+					UserID:   userID,
+					Username: userResp.User.Username,
+					Status:   "not_team_member",
+				})
+				failedCount++
+				continue
+			}
+
+			log.Printf("Database error when checking team membership: %v", err)
+			results = append(results, PromoteResult{
+				UserID:   userID,
+				Username: userResp.User.Username,
+				Status:   "database_error",
+			})
+			failedCount++
+			continue
+		}
+
+		// Check if already a leader
+		if memberRoster.IsLeader {
+			results = append(results, PromoteResult{
+				UserID:   userID,
+				Username: userResp.User.Username,
+				Status:   "already_leader",
+			})
+			failedCount++
+			continue
+		}
+
+		// Update to make the user a leader
+		memberRoster.IsLeader = true
+		if err := h.db.Save(&memberRoster).Error; err != nil {
+			log.Printf("Failed to promote user %s to team leader: %v", userID, err)
+			results = append(results, PromoteResult{
+				UserID:   userID,
+				Username: userResp.User.Username,
+				Status:   "update_failed",
+			})
+			failedCount++
+			continue
+		}
+
+		// Success
+		results = append(results, PromoteResult{
+			UserID:   userID,
+			Username: userResp.User.Username,
+			Status:   "promoted_to_leader",
+		})
+		successCount++
+	}
+
+	var responseStatus int
+	var successValue bool
+
+	if failedCount == 0 {
+		responseStatus = http.StatusOK
+		successValue = true
+	} else if successCount > 0 {
+		responseStatus = http.StatusPartialContent
+		successValue = true
+	} else {
+		responseStatus = http.StatusBadRequest
+		successValue = false
+	}
+
+	c.JSON(responseStatus, gin.H{
+		"success": successValue,
+		"message": fmt.Sprintf("Processed %d promotion requests: %d successful, %d failed",
+			len(req.UserIDs), successCount, failedCount),
+		"data": gin.H{
+			"teamId":       team.ID,
+			"teamName":     team.TeamName,
+			"successCount": successCount,
+			"totalCount":   len(req.UserIDs),
+			"results":      results,
+		},
+	})
+}
+
+// RemoveManagerFromTeam demotes a team manager/leader to a regular member
+func (h *TeamHandler) RemoveManagerFromTeam(c *gin.Context) {
+	currentUserID, exists := c.Get("user_id")
+	if !exists {
+		log.Println("Unauthorized attempt to remove team manager: missing user_id")
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error":   "Authentication required",
+		})
+		return
+	}
+
+	// Parse team ID
+	teamIDStr := c.Param("teamId")
+	teamID, err := strconv.ParseUint(teamIDStr, 10, 64)
+	if err != nil {
+		log.Printf("Invalid team ID format: %s", teamIDStr)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid team ID format",
+		})
+		return
+	}
+
+	// Parse manager ID
+	managerIDStr := c.Param("managerId")
+	managerID, err := uuid.Parse(managerIDStr)
+	if err != nil {
+		log.Printf("Invalid manager ID format: %s", managerIDStr)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid manager ID format",
+		})
+		return
+	}
+
+	// Check if team exists
+	var team models.Team
+	if err := h.db.First(&team, teamID).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			log.Printf("Team not found: %d", teamID)
+			c.JSON(http.StatusNotFound, gin.H{
+				"success": false,
+				"error":   "Team not found",
+			})
+			return
+		}
+		log.Printf("Database error when finding team: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to verify team",
+		})
+		return
+	}
+
+	// Check if current user is team leader
+	var leaderRoster models.Roster
+	if err := h.db.Where("\"teamId\" = ? AND \"userId\" = ? AND \"isLeader\" = ?", teamID, currentUserID, true).First(&leaderRoster).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			log.Printf("User %s attempted to remove manager from team %d without leadership permission", currentUserID, teamID)
+			c.JSON(http.StatusForbidden, gin.H{
+				"success": false,
+				"error":   "Only team leaders can remove managers",
+			})
+			return
+		}
+		log.Printf("Database error when checking leadership: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to verify team leadership",
+		})
+		return
+	}
+
+	// Check if manager exists and is a leader
+	var managerRoster models.Roster
+	if err := h.db.Where("\"teamId\" = ? AND \"userId\" = ?", teamID, managerID).First(&managerRoster).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			log.Printf("Manager %s not found in team %d", managerID, teamID)
+			c.JSON(http.StatusNotFound, gin.H{
+				"success": false,
+				"error":   "Manager not found in this team",
+			})
+			return
+		}
+		log.Printf("Database error when checking manager: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to verify team membership",
+		})
+		return
+	}
+
+	if !managerRoster.IsLeader {
+		log.Printf("User %s is not a manager of team %d", managerID, teamID)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "User is not a manager of this team",
+		})
+		return
+	}
+
+	// Count team leaders
+	var leaderCount int64
+	if err := h.db.Model(&models.Roster{}).Where("\"teamId\" = ? AND \"isLeader\" = ?", teamID, true).Count(&leaderCount).Error; err != nil {
+		log.Printf("Error counting team leaders: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to verify team leadership status",
+		})
+		return
+	}
+
+	if leaderCount <= 1 {
+		log.Printf("Attempted to remove the only leader from team %d", teamID)
+		c.JSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"error":   "Cannot remove the only team leader. Assign another leader first.",
+		})
+		return
+	}
+
+	// Update to demote the manager
+	managerRoster.IsLeader = false
+	if err := h.db.Save(&managerRoster).Error; err != nil {
+		log.Printf("Failed to demote manager %s from team %d: %v", managerID, teamID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to demote manager",
+		})
+		return
+	}
+
+	// Fetch username for response
+	userResp, _ := h.userService.GetUserByID(managerID.String())
+	username := ""
+	if userResp != nil && userResp.User.Username != "" {
+		username = userResp.User.Username
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Manager demoted successfully",
+		"data": gin.H{
+			"teamId":   team.ID,
+			"teamName": team.TeamName,
+			"userId":   managerID,
+			"username": username,
+		},
 	})
 }

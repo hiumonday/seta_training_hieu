@@ -10,7 +10,7 @@ dotenv.config({ path: path.resolve(__dirname, "../../../.env") });
 
 export const generateAccessToken = (userId) => {
   return jwt.sign({ userId }, process.env.ACCESS_TOKEN_SECRET, {
-    expiresIn: "30m",
+    expiresIn: "1d",
   });
 };
 
