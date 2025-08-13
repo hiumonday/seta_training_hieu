@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"time"
 
 	"github.com/machinebox/graphql"
@@ -28,7 +27,7 @@ type UserService struct {
 
 // NewUserService creates a new user service client
 func NewUserService() *UserService {
-	baseURL := os.Getenv("USER_SERVICE_URL")
+	baseURL := "http://host.docker.internal:4000/users"
 
 	log.Printf("Initializing UserService with URL: %s", baseURL)
 	client := graphql.NewClient(baseURL)

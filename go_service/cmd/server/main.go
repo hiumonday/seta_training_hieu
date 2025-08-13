@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -12,6 +11,7 @@ import (
 
 	"go_service/internal/database"
 	"go_service/internal/handlers"
+	"go_service/internal/logger"
 	"go_service/internal/middleware"
 	"go_service/internal/router"
 
@@ -20,19 +20,16 @@ import (
 )
 
 func main() {
+
+	logger.InitLogger()
+
 	// Load environment variables
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found")
 	}
 
 	// Initialize database
-	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable TimeZone=Asia/Ho_Chi_Minh",
-		os.Getenv("DB_HOST"),
-		os.Getenv("DB_USER"),
-		os.Getenv("DB_PASS"),
-		os.Getenv("DB_NAME"),
-		os.Getenv("DB_PORT"),
-	)
+	dsn := database.CreateDSN()
 	log.Printf("dsn: %s", dsn)
 	db, err := database.Connect(dsn)
 	if err != nil {
@@ -43,7 +40,8 @@ func main() {
 
 	// Setup Gin router
 	r := gin.Default()
-	r.Use(middleware.AuthMiddleware(db))
+	middleware.SetupPrometheus(r)
+	r.Use(middleware.LoggerMiddleware())
 	router.SetupRouter(r, db, teamHandler)
 
 	port := os.Getenv("PORT")
