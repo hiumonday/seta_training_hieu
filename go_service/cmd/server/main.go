@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"go_service/internal/database"
 	"go_service/internal/handlers"
@@ -25,7 +29,7 @@ func main() {
 	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable TimeZone=Asia/Ho_Chi_Minh",
 		os.Getenv("DB_HOST"),
 		os.Getenv("DB_USER"),
-		os.Getenv("DB_PASS"), // Match Node.js service env var name
+		os.Getenv("DB_PASS"),
 		os.Getenv("DB_NAME"),
 		os.Getenv("DB_PORT"),
 	)
@@ -47,7 +51,37 @@ func main() {
 		port = "8080"
 	}
 
-	log.Printf("Server starting on port %s", port)
-	// add graceful shutdown
-	log.Fatal(http.ListenAndServe(":"+port, r))
+	// Create a new HTTP server with the Gin router
+	srv := &http.Server{
+		Addr:    ":" + port,
+		Handler: r,
+	}
+	//add graceful shutdown
+	// Start the server in a goroutine
+	go func() {
+		log.Printf("Server starting on port %s", port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server error: %v", err)
+		}
+	}()
+
+	// Setup graceful shutdown
+	quit := make(chan os.Signal, 1)
+	// Listen for SIGINT and SIGTERM signals
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	// Block until a signal is received
+	<-quit
+	log.Println("Shutting down server...")
+
+	// Create a deadline context for shutdown
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Attempt to do a graceful shutdown
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatalf("Server forced to shutdown: %v", err)
+	}
+
+	log.Println("Server exiting")
 }
