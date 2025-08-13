@@ -5226,3 +5226,6 @@
 {"level":"info","method":"GET","path":"/health","status":200,"latency":251.536237,"time":"2025-07-31T09:04:52Z","message":"Incoming request"}
 {"level":"info","method":"GET","path":"/","status":200,"latency":189.324885,"time":"2025-07-31T09:04:52Z","message":"Incoming request"}
 {"level":"info","method":"GET","path":"/ping","status":200,"latency":159.310845,"time":"2025-07-31T09:04:52Z","message":"Incoming request"}
+{"level":"info","method":"GET","path":"/api/teams","status":401,"latency":3.2899,"time":"2025-08-12T14:27:35+07:00","message":"Incoming request"}
+{"level":"info","method":"GET","path":"/api/teams","status":401,"latency":0,"time":"2025-08-12T14:27:49+07:00","message":"Incoming request"}
+{"level":"info","method":"GET","path":"/api/teams","status":401,"latency":1.0895,"time":"2025-08-12T15:26:27+07:00","message":"Incoming request"}

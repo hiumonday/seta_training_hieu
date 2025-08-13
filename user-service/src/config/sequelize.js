@@ -1,8 +1,6 @@
 import dbConfig from "./postgres.db.js";
 import { Sequelize, DataTypes } from "sequelize";
 import userModel from "../models/userModel.js";
-import teamModel from "../models/teamModel.js";
-import rosterModel from "../models/rosterModel.js";
 
 import dotenv from "dotenv";
 import { fileURLToPath } from "url";
@@ -41,8 +39,6 @@ db.Sequelize = Sequelize; // refer to the library
 db.sequelize = sequelize; // refer to an instance of Sequelize
 
 db.User = userModel(sequelize, DataTypes);
-db.Team = teamModel(sequelize, DataTypes);
-db.Roster = rosterModel(sequelize, DataTypes);
 
 // set up associations
 Object.keys(db).forEach((modelName) => {
