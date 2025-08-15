@@ -19,7 +19,7 @@ const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.resolve(__dirname, "../.env") });
 
 const port = process.env.PORT || 4000;
-const host = process.env.HOST || "localhost";
+const host = "0.0.0.0";
 
 if (process.env.NODE_ENV === "development") {
   db.sequelize

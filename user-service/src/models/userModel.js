@@ -41,21 +41,6 @@ const userModel = (sequelize, DataTypes) => {
     }
   );
 
-  User.associate = (models) => {
-    // Many-To-Many relationship
-    User.belongsToMany(models.Team, {
-      through: models.Roster,
-      foreignKey: "userId",
-      as: "teams",
-      onDelete: "CASCADE",
-    });
-    // One-To-Many relationship
-    User.hasMany(models.Roster, {
-      foreignKey: "userId",
-      as: "rosters",
-    });
-  };
-
   // hook
   User.beforeCreate(async (user, options) => {
     const hashedPassword = await hashPassword(user.password);

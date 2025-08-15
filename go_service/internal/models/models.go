@@ -6,36 +6,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// Các kiểu ENUM
-type UserRole string
-
-const (
-	Manager UserRole = "MANAGER"
-	Member  UserRole = "MEMBER"
-)
-
 type AccessLevel string
 
 const (
 	Read  AccessLevel = "read"
 	Write AccessLevel = "write"
 )
-
-type User struct {
-	ID uuid.UUID `gorm:"type:uuid;primary_key;column:userId" json:"userId"` // consider uuid as primary key may be slower than int
-	// b-tree index
-	Username  string    `gorm:"size:100;not null" json:"username"`
-	Email     string    `gorm:"size:255;not null;unique" json:"email"`
-	Password  string    `gorm:"size:255;not null" json:"password"`
-	Role      UserRole  `gorm:"type:varchar(10);not null" json:"role"`
-	CreatedAt time.Time `gorm:"column:createdAt" json:"createdAt"`
-	UpdatedAt time.Time `gorm:"column:updatedAt" json:"updatedAt"`
-}
-
-// TableName overrides the table name used by User to `Users`
-func (User) TableName() string {
-	return "Users"
-}
 
 type Team struct {
 	ID        int       `gorm:"primary_key;auto_increment;column:teamId" json:"id"`
@@ -58,7 +34,6 @@ type Roster struct {
 
 	// Foreign key relationships
 	Team Team `gorm:"foreignKey:TeamID"`
-	User User `gorm:"foreignKey:UserID"`
 }
 
 // TableName overrides the table name used by Roster to `Rosters`
@@ -95,9 +70,7 @@ type FolderShare struct {
 	UpdatedAt   time.Time   `json:"updatedAt"`
 
 	// Foreign key relationships
-	Folder   Folder `gorm:"foreignKey:FolderID"`
-	User     User   `gorm:"foreignKey:UserID"`
-	SharedBy User   `gorm:"foreignKey:SharedByID"`
+	Folder Folder `gorm:"foreignKey:FolderID"`
 }
 
 // NoteShare represents sharing permissions for individual notes
@@ -111,7 +84,5 @@ type NoteShare struct {
 	UpdatedAt   time.Time   `json:"updatedAt"`
 
 	// Foreign key relationships
-	Note     Note `gorm:"foreignKey:NoteID"`
-	User     User `gorm:"foreignKey:UserID"`
-	SharedBy User `gorm:"foreignKey:SharedByID"`
+	Note Note `gorm:"foreignKey:NoteID"`
 }

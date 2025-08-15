@@ -7,12 +7,11 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
-	"golang.org/x/crypto/bcrypt"
 )
 
-// Claims struct that matches Node.js token payload exactly
+// Claims struct that matches Node.js token payload
 type Claims struct {
-	UserID uuid.UUID `json:"userId"` // Match Node.js payload format
+	UserID uuid.UUID `json:"userId"`
 	jwt.RegisteredClaims
 }
 
@@ -23,9 +22,6 @@ func ValidateToken(tokenString string) (*Claims, error) {
 	if secret == "" {
 		return nil, errors.New("ACCESS_TOKEN_SECRET not set")
 	}
-
-	// Debug: Print secret to verify it matches
-	fmt.Printf("DEBUG: Using ACCESS_TOKEN_SECRET: %s\n", secret[:10]+"...")
 
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
 		// Verify signing method
@@ -48,18 +44,4 @@ func ValidateToken(tokenString string) (*Claims, error) {
 
 	fmt.Printf("DEBUG: Successfully parsed token for user: %s\n", claims.UserID)
 	return claims, nil
-}
-
-// HashPassword hashes a password using bcrypt
-func HashPassword(password string) (string, error) {
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return "", err
-	}
-	return string(hash), nil
-}
-
-// VerifyPassword verifies a password against its hash
-func VerifyPassword(hashedPassword, password string) error {
-	return bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
 }
