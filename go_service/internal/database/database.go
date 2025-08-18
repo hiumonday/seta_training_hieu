@@ -28,7 +28,7 @@ func Connect(dsn string) (*gorm.DB, error) {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	err = DB.AutoMigrate(&models.Team{}, &models.Roster{})
+	err = DB.AutoMigrate(&models.Team{}, &models.Roster{}, &models.Folder{}, &models.Note{}, &models.FolderShare{}, &models.NoteShare{})
 
 	if err != nil {
 
