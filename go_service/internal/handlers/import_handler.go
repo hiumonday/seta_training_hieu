@@ -105,8 +105,8 @@ func (h *ImportHandler) ImportUsers(c *gin.Context) {
 
 	// Create a buffered channel for the worker pool
 	const maxWorkers = 5
-	jobs := make(chan []string, 100)
-	results := make(chan ImportResult, 100)
+	jobs := make(chan []string, 100)        //channel chứa dữ liệu csv cần xử lí
+	results := make(chan ImportResult, 100) //Channel nhận kết quả
 	var wg sync.WaitGroup
 
 	// Start worker pool
@@ -222,7 +222,6 @@ func (h *ImportHandler) worker(jobs <-chan []string, results chan<- ImportResult
 	}
 }
 
-// validateHeaders checks if all expected headers are present in the actual headers
 // validateHeaders checks if all expected headers are present in the actual headers
 func validateHeaders(actual []string, expected []string) bool {
 	if len(actual) < len(expected) {

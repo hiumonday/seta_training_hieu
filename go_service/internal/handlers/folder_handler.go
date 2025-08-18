@@ -519,6 +519,10 @@ func (h *FolderHandler) ShareFolder(c *gin.Context) {
 		return
 	}
 
+	if err := h.db.Preload("Folder").First(&share, "id = ?", share.ID).Error; err != nil {
+		log.Printf("Warning: Could not load folder details: %v", err)
+	}
+
 	c.JSON(http.StatusCreated, gin.H{
 		"success": true,
 		"message": "Folder shared successfully",

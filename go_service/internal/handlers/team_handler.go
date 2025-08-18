@@ -845,3 +845,275 @@ func (h *TeamHandler) RemoveManagerFromTeam(c *gin.Context) {
 		},
 	})
 }
+
+// GetTeamAssets retrieves all assets (folders and notes) that team members own or can access
+func (h *TeamHandler) GetTeamAssets(c *gin.Context) {
+	// Check if user has MANAGER role
+	role, exists := c.Get("role")
+	if !exists || role != "MANAGER" {
+		log.Printf("Unauthorized access attempt: role required is MANAGER, got %v", role)
+		c.JSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"error":   "Only managers can access team assets",
+		})
+		return
+	}
+	// Parse team ID
+	teamIDStr := c.Param("teamId")
+	teamID, err := strconv.ParseUint(teamIDStr, 10, 64)
+	if err != nil {
+		log.Printf("Invalid team ID format: %s", teamIDStr)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid team ID format",
+		})
+		return
+	}
+
+	// Check if team exists
+	var team models.Team
+	if err := h.db.First(&team, teamID).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			log.Printf("Team not found: %d", teamID)
+			c.JSON(http.StatusNotFound, gin.H{
+				"success": false,
+				"error":   "Team not found",
+			})
+			return
+		}
+		log.Printf("Database error when finding team: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to verify team",
+		})
+		return
+	}
+
+	// Get all team members
+	var rosters []models.Roster
+	if err := h.db.Where("\"teamId\" = ?", teamID).Find(&rosters).Error; err != nil {
+		log.Printf("Failed to fetch team members: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to fetch team members",
+		})
+		return
+	}
+
+	if len(rosters) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "Team has no members",
+			"data": gin.H{
+				"teamId":   team.ID,
+				"teamName": team.TeamName,
+				"folders":  []interface{}{},
+				"notes":    []interface{}{},
+			},
+		})
+		return
+	}
+
+	// Extract user IDs for query
+	userIDs := make([]uuid.UUID, len(rosters))
+	for i, roster := range rosters {
+		userIDs[i] = roster.UserID
+	}
+
+	// Get folders owned by team members
+	var folders []models.Folder
+	if err := h.db.Where("owner_id IN ?", userIDs).Find(&folders).Error; err != nil {
+		log.Printf("Failed to fetch folders: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to fetch folders",
+		})
+		return
+	}
+
+	// Get folders shared with team members
+	var folderShares []models.FolderShare
+	if err := h.db.Preload("Folder").Where("user_id IN ?", userIDs).Find(&folderShares).Error; err != nil {
+		log.Printf("Failed to fetch folder shares: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to fetch folder shares",
+		})
+		return
+	}
+
+	// Add shared folders to the folders list, avoiding duplicates
+	folderMap := make(map[uuid.UUID]models.Folder)
+	for _, folder := range folders {
+		folderMap[folder.ID] = folder
+	}
+
+	for _, share := range folderShares {
+		if _, exists := folderMap[share.Folder.ID]; !exists {
+			folderMap[share.Folder.ID] = share.Folder
+		}
+	}
+
+	// Get notes owned by team members
+	var notes []models.Note
+	if err := h.db.Where("owner_id IN ?", userIDs).Find(&notes).Error; err != nil {
+		log.Printf("Failed to fetch notes: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to fetch notes",
+		})
+		return
+	}
+
+	// Get notes shared with team members
+	var noteShares []models.NoteShare
+	if err := h.db.Preload("Note").Where("user_id IN ?", userIDs).Find(&noteShares).Error; err != nil {
+		log.Printf("Failed to fetch note shares: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to fetch note shares",
+		})
+		return
+	}
+
+	// Add shared notes to the notes list, avoiding duplicates
+	noteMap := make(map[uuid.UUID]models.Note)
+	for _, note := range notes {
+		noteMap[note.ID] = note
+	}
+
+	for _, share := range noteShares {
+		if _, exists := noteMap[share.Note.ID]; !exists {
+			noteMap[share.Note.ID] = share.Note
+		}
+	}
+
+	// Convert maps back to slices for response
+	resultFolders := make([]models.Folder, 0, len(folderMap))
+	for _, folder := range folderMap {
+		resultFolders = append(resultFolders, folder)
+	}
+
+	resultNotes := make([]models.Note, 0, len(noteMap))
+	for _, note := range noteMap {
+		resultNotes = append(resultNotes, note)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Team assets retrieved successfully",
+		"data": gin.H{
+			"teamId":   team.ID,
+			"teamName": team.TeamName,
+			"folders":  resultFolders,
+			"notes":    resultNotes,
+		},
+	})
+}
+
+// GetUserAssets retrieves all assets (folders and notes) owned by or shared with a user
+func (h *TeamHandler) GetUserAssets(c *gin.Context) {
+
+	// Check if user has MANAGER role
+	role, exists := c.Get("role")
+	if !exists || role != "MANAGER" {
+		log.Printf("Unauthorized access attempt: role required is MANAGER, got %v", role)
+		c.JSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"error":   "Only managers can access user assets",
+		})
+		return
+	}
+
+	// Parse user ID
+	userIDStr := c.Param("userId")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		log.Printf("Invalid user ID format: %s", userIDStr)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid user ID format",
+		})
+		return
+	}
+
+	// Verify user exists through the user service
+	userResp, err := h.userService.GetUserByID(userID.String())
+	if err != nil || userResp == nil || userResp.User == nil {
+		log.Printf("User not found: %v", err)
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"error":   "User not found",
+		})
+		return
+	}
+
+	// Get folders owned by the user
+	var folders []models.Folder
+	if err := h.db.Where("owner_id = ?", userID).Find(&folders).Error; err != nil {
+		log.Printf("Failed to fetch folders: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to fetch folders",
+		})
+		return
+	}
+
+	// Get folders shared with the user
+	var folderShares []models.FolderShare
+	if err := h.db.Preload("Folder").Where("user_id = ?", userID).Find(&folderShares).Error; err != nil {
+		log.Printf("Failed to fetch folder shares: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to fetch folder shares",
+		})
+		return
+	}
+
+	// Get notes owned by the user
+	var notes []models.Note
+	if err := h.db.Where("owner_id = ?", userID).Find(&notes).Error; err != nil {
+		log.Printf("Failed to fetch notes: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to fetch notes",
+		})
+		return
+	}
+
+	// Get notes shared with the user
+	var noteShares []models.NoteShare
+	if err := h.db.Preload("Note").Where("user_id = ?", userID).Find(&noteShares).Error; err != nil {
+		log.Printf("Failed to fetch note shares: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to fetch note shares",
+		})
+		return
+	}
+
+	// Add shared folders to response
+	sharedFolders := make([]models.Folder, len(folderShares))
+	for i, share := range folderShares {
+		sharedFolders[i] = share.Folder
+	}
+
+	// Add shared notes to response
+	sharedNotes := make([]models.Note, len(noteShares))
+	for i, share := range noteShares {
+		sharedNotes[i] = share.Note
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "User assets retrieved successfully",
+		"data": gin.H{
+			"userId":        userID,
+			"username":      userResp.User.Username,
+			"ownedFolders":  folders,
+			"sharedFolders": sharedFolders,
+			"ownedNotes":    notes,
+			"sharedNotes":   sharedNotes,
+		},
+	})
+}

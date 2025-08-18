@@ -20,7 +20,6 @@ type Team struct {
 	UpdatedAt time.Time `gorm:"column:updatedAt" json:"updatedAt"`
 }
 
-// TableName overrides the table name used by Team to `Teams`
 func (Team) TableName() string {
 	return "Teams"
 }

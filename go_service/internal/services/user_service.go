@@ -54,6 +54,7 @@ func (s *UserService) GetUserByID(userID string) (*UserResponse, error) {
 	log.Printf("Fetching user with ID: %s", userID)
 
 	// Create GraphQL request
+	//đẩy query sang file const
 	req := graphql.NewRequest(`
         query GetUser($userId: ID!) {
             user(userId: $userId) {

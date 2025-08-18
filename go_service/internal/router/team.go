@@ -6,7 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// ROutes cho team
+// TeamRoutes sets up routes for team-related operations
 func TeamRoutes(rg *gin.RouterGroup, h *handlers.TeamHandler) {
 	teams := rg.Group("/teams")
 	{
@@ -15,5 +15,12 @@ func TeamRoutes(rg *gin.RouterGroup, h *handlers.TeamHandler) {
 		teams.DELETE("/:teamId/members/:memberId", h.RemoveMemberFromTeam)
 		teams.POST("/:teamId/managers", h.AddManagerToTeam)
 		teams.DELETE("/:teamId/managers/:managerId", h.RemoveManagerFromTeam)
+		teams.GET("/:teamId/assets", h.GetTeamAssets)
+	}
+
+	// User assets route - manager only
+	users := rg.Group("/users")
+	{
+		users.GET("/:userId/assets", h.GetUserAssets)
 	}
 }
