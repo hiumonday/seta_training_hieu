@@ -1,13 +1,17 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"go_service/internal/events"
+	"go_service/internal/kafka"
 	"go_service/internal/models"
+	"go_service/internal/redis"
 	"go_service/internal/responses"
 	"go_service/internal/services"
 
@@ -17,14 +21,18 @@ import (
 )
 
 type TeamHandler struct {
-	db          *gorm.DB
-	userService *services.UserService
+	db             *gorm.DB
+	userService    *services.UserService
+	kafkaProducer  *kafka.Producer
+	redisService   *redis.Service
 }
 
-func NewTeamHandler(db *gorm.DB) *TeamHandler {
+func NewTeamHandler(db *gorm.DB, kafkaProducer *kafka.Producer, redisService *redis.Service) *TeamHandler {
 	return &TeamHandler{
-		db:          db,
-		userService: services.NewUserService(),
+		db:             db,
+		userService:    services.NewUserService(),
+		kafkaProducer:  kafkaProducer,
+		redisService:   redisService,
 	}
 }
 
@@ -131,6 +139,25 @@ func (h *TeamHandler) CreateTeam(c *gin.Context) {
 	}
 
 	tx.Commit()
+
+	// Emit team created event
+	if h.kafkaProducer != nil {
+		teamEvent := events.NewTeamEvent(events.TeamCreated, team.ID, creatorID, nil)
+		if err := h.kafkaProducer.PublishTeamEvent(context.Background(), teamEvent); err != nil {
+			log.Printf("Failed to publish team created event: %v", err)
+			// Don't fail the request if event publishing fails
+		}
+	}
+
+	// Initialize team members cache
+	if h.redisService != nil {
+		memberIDs := []uuid.UUID{creatorID}
+		memberIDs = append(memberIDs, addedMembers...)
+		if err := h.redisService.SetTeamMembers(context.Background(), team.ID, memberIDs); err != nil {
+			log.Printf("Failed to initialize team members cache: %v", err)
+			// Don't fail the request if cache fails
+		}
+	}
 
 	response := gin.H{
 		"message": "Team created successfully",
@@ -333,6 +360,28 @@ func (h *TeamHandler) AddMemberToTeam(c *gin.Context) {
 		return
 	}
 
+	// Emit member added events and update cache for successful additions
+	if h.kafkaProducer != nil || h.redisService != nil {
+		for _, result := range results {
+			if result.Status == "added_successfully" {
+				// Emit Kafka event
+				if h.kafkaProducer != nil {
+					teamEvent := events.NewTeamEvent(events.MemberAdded, int(teamID), currentUserID.(uuid.UUID), &result.UserID)
+					if err := h.kafkaProducer.PublishTeamEvent(context.Background(), teamEvent); err != nil {
+						log.Printf("Failed to publish member added event: %v", err)
+					}
+				}
+				
+				// Update Redis cache
+				if h.redisService != nil {
+					if err := h.redisService.AddTeamMember(context.Background(), int(teamID), result.UserID); err != nil {
+						log.Printf("Failed to update team members cache: %v", err)
+					}
+				}
+			}
+		}
+	}
+
 	var responseStatus int
 	var successValue bool
 
@@ -453,6 +502,25 @@ func (h *TeamHandler) RemoveMemberFromTeam(c *gin.Context) {
 		log.Printf("Failed to remove member %s from team %d: %v", memberID, teamID, err)
 		c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to remove member from team", err.Error()))
 		return
+	}
+
+	// Emit member removed event
+	if h.kafkaProducer != nil {
+		eventType := events.MemberRemoved
+		if memberRoster.IsLeader {
+			eventType = events.ManagerRemoved
+		}
+		teamEvent := events.NewTeamEvent(eventType, int(teamID), currentUserID.(uuid.UUID), &memberID)
+		if err := h.kafkaProducer.PublishTeamEvent(context.Background(), teamEvent); err != nil {
+			log.Printf("Failed to publish member removed event: %v", err)
+		}
+	}
+
+	// Update Redis cache
+	if h.redisService != nil {
+		if err := h.redisService.RemoveTeamMember(context.Background(), int(teamID), memberID); err != nil {
+			log.Printf("Failed to update team members cache: %v", err)
+		}
 	}
 
 	// Fetch username for response
@@ -618,6 +686,14 @@ func (h *TeamHandler) AddManagerToTeam(c *gin.Context) {
 			continue
 		}
 
+		// Emit manager added event
+		if h.kafkaProducer != nil {
+			teamEvent := events.NewTeamEvent(events.ManagerAdded, int(teamID), currentUserID.(uuid.UUID), &userID)
+			if err := h.kafkaProducer.PublishTeamEvent(context.Background(), teamEvent); err != nil {
+				log.Printf("Failed to publish manager added event: %v", err)
+			}
+		}
+
 		// Success
 		results = append(results, PromoteResult{
 			UserID:   userID,
@@ -747,6 +823,14 @@ func (h *TeamHandler) RemoveManagerFromTeam(c *gin.Context) {
 		log.Printf("Failed to demote manager %s from team %d: %v", managerID, teamID, err)
 		c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to demote manager", err.Error()))
 		return
+	}
+
+	// Emit manager removed event
+	if h.kafkaProducer != nil {
+		teamEvent := events.NewTeamEvent(events.ManagerRemoved, int(teamID), currentUserID.(uuid.UUID), &managerID)
+		if err := h.kafkaProducer.PublishTeamEvent(context.Background(), teamEvent); err != nil {
+			log.Printf("Failed to publish manager removed event: %v", err)
+		}
 	}
 
 	// Fetch username for response

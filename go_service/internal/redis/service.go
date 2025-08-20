@@ -273,8 +273,6 @@ func (s *Service) GetAssetACL(ctx context.Context, assetID uuid.UUID) (map[strin
 
 // AddAssetAccess adds or updates access for a user to an asset
 func (s *Service) AddAssetAccess(ctx context.Context, assetID, userID uuid.UUID, accessLevel string) error {
-	key := fmt.Sprintf("asset:%s:acl", assetID.String())
-	
 	// Get existing ACL or create new one
 	acl, err := s.GetAssetACL(ctx, assetID)
 	if err != nil {
@@ -293,8 +291,6 @@ func (s *Service) AddAssetAccess(ctx context.Context, assetID, userID uuid.UUID,
 
 // RemoveAssetAccess removes access for a user from an asset
 func (s *Service) RemoveAssetAccess(ctx context.Context, assetID, userID uuid.UUID) error {
-	key := fmt.Sprintf("asset:%s:acl", assetID.String())
-	
 	// Get existing ACL
 	acl, err := s.GetAssetACL(ctx, assetID)
 	if err != nil {
