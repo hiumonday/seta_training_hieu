@@ -1,10 +1,14 @@
 package handlers
 
 import (
+	"context"
 	"log"
 	"net/http"
 
+	"go_service/internal/events"
+	"go_service/internal/kafka"
 	"go_service/internal/models"
+	"go_service/internal/redis"
 	"go_service/internal/responses"
 
 	"github.com/gin-gonic/gin"
@@ -13,11 +17,17 @@ import (
 )
 
 type FolderHandler struct {
-	db *gorm.DB
+	db             *gorm.DB
+	kafkaProducer  *kafka.Producer
+	redisService   *redis.Service
 }
 
-func NewFolderHandler(db *gorm.DB) *FolderHandler {
-	return &FolderHandler{db: db}
+func NewFolderHandler(db *gorm.DB, kafkaProducer *kafka.Producer, redisService *redis.Service) *FolderHandler {
+	return &FolderHandler{
+		db:             db,
+		kafkaProducer:  kafkaProducer,
+		redisService:   redisService,
+	}
 }
 
 // CreateFolder creates a new folder for the authenticated user
@@ -55,6 +65,21 @@ func (h *FolderHandler) CreateFolder(c *gin.Context) {
 		return
 	}
 
+	// Emit folder created event
+	if h.kafkaProducer != nil {
+		assetEvent := events.NewAssetEvent(events.FolderCreated, events.AssetTypeFolder, folder.ID, folder.OwnerID, folder.OwnerID)
+		if err := h.kafkaProducer.PublishAssetEvent(context.Background(), assetEvent); err != nil {
+			log.Printf("Failed to publish folder created event: %v", err)
+		}
+	}
+
+	// Cache folder metadata
+	if h.redisService != nil {
+		if err := h.redisService.SetFolderMetadata(context.Background(), &folder); err != nil {
+			log.Printf("Failed to cache folder metadata: %v", err)
+		}
+	}
+
 	c.JSON(http.StatusCreated, responses.NewSuccessResponse("Folder created successfully", folder))
 }
 
@@ -77,38 +102,91 @@ func (h *FolderHandler) GetFolderDetails(c *gin.Context) {
 		return
 	}
 
-	// Get folder details
+	// Try to get folder details from cache first
 	var folder models.Folder
-	if err := h.db.First(&folder, "id = ?", folderID).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			log.Printf("Folder not found: %s", folderID)
-			c.JSON(http.StatusNotFound, responses.NewErrorResponse("Folder not found", ""))
+	var folderFromCache *models.Folder
+	
+	if h.redisService != nil {
+		folderFromCache, err = h.redisService.GetFolderMetadata(context.Background(), folderID)
+		if err != nil {
+			log.Printf("Cache error when getting folder metadata: %v", err)
+		}
+	}
+	
+	if folderFromCache != nil {
+		// Use cached data
+		folder = *folderFromCache
+		log.Printf("Retrieved folder %s from cache", folderID)
+	} else {
+		// Get folder details from database
+		if err := h.db.First(&folder, "id = ?", folderID).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				log.Printf("Folder not found: %s", folderID)
+				c.JSON(http.StatusNotFound, responses.NewErrorResponse("Folder not found", ""))
+				return
+			}
+			log.Printf("Database error when finding folder: %v", err)
+			c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to retrieve folder details", ""))
 			return
 		}
-		log.Printf("Database error when finding folder: %v", err)
-		c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to retrieve folder details", ""))
-		return
+		
+		// Cache the folder for future requests
+		if h.redisService != nil {
+			if err := h.redisService.SetFolderMetadata(context.Background(), &folder); err != nil {
+				log.Printf("Failed to cache folder metadata: %v", err)
+			}
+		}
 	}
 
 	// Check ownership or sharing permissions
 	if folder.OwnerID != currentUserID.(uuid.UUID) {
-		// Check if folder is shared with the user
-		var folderShare models.FolderShare
-		if err := h.db.Where("folder_id = ? AND user_id = ?", folderID, currentUserID).First(&folderShare).Error; err != nil {
-			if err == gorm.ErrRecordNotFound {
-				log.Printf("User %s attempted to access folder %s without permission", currentUserID, folderID)
-				c.JSON(http.StatusForbidden, responses.NewErrorResponse("You don't have permission to access this folder", ""))
+		// Try to check access from cache first
+		var hasAccess bool
+		var accessLevel string
+		var sharedByID uuid.UUID
+		
+		if h.redisService != nil {
+			acl, err := h.redisService.GetAssetACL(context.Background(), folderID)
+			if err != nil {
+				log.Printf("Cache error when getting asset ACL: %v", err)
+			} else if acl != nil {
+				if level, exists := acl[currentUserID.(uuid.UUID).String()]; exists {
+					hasAccess = true
+					accessLevel = level
+					log.Printf("Retrieved folder access from cache for user %s", currentUserID)
+				}
+			}
+		}
+		
+		if !hasAccess {
+			// Check if folder is shared with the user from database
+			var folderShare models.FolderShare
+			if err := h.db.Where("folder_id = ? AND user_id = ?", folderID, currentUserID).First(&folderShare).Error; err != nil {
+				if err == gorm.ErrRecordNotFound {
+					log.Printf("User %s attempted to access folder %s without permission", currentUserID, folderID)
+					c.JSON(http.StatusForbidden, responses.NewErrorResponse("You don't have permission to access this folder", ""))
+					return
+				}
+				log.Printf("Database error when checking folder access: %v", err)
+				c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to verify folder access permission", ""))
 				return
 			}
-			log.Printf("Database error when checking folder access: %v", err)
-			c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to verify folder access permission", ""))
-			return
+			accessLevel = string(folderShare.AccessLevel)
+			sharedByID = folderShare.SharedByID
+			
+			// Update cache with the access information
+			if h.redisService != nil {
+				if err := h.redisService.AddAssetAccess(context.Background(), folderID, currentUserID.(uuid.UUID), accessLevel); err != nil {
+					log.Printf("Failed to cache access control: %v", err)
+				}
+			}
 		}
+		
 		// Include sharing info in response
 		c.JSON(http.StatusOK, responses.NewSuccessResponse("Folder details retrieved successfully", gin.H{
 			"folder":      folder,
-			"accessLevel": folderShare.AccessLevel,
-			"sharedBy":    folderShare.SharedByID,
+			"accessLevel": accessLevel,
+			"sharedBy":    sharedByID,
 		}))
 		return
 	}
@@ -362,6 +440,21 @@ func (h *FolderHandler) ShareFolder(c *gin.Context) {
 			return
 		}
 
+		// Emit folder shared event for update
+		if h.kafkaProducer != nil {
+			assetEvent := events.NewAssetSharingEvent(events.FolderShared, events.AssetTypeFolder, folderID, folder.OwnerID, currentUserID.(uuid.UUID), req.UserID, string(req.AccessLevel))
+			if err := h.kafkaProducer.PublishAssetEvent(context.Background(), assetEvent); err != nil {
+				log.Printf("Failed to publish folder shared event: %v", err)
+			}
+		}
+
+		// Update Redis access control cache
+		if h.redisService != nil {
+			if err := h.redisService.AddAssetAccess(context.Background(), folderID, req.UserID, string(req.AccessLevel)); err != nil {
+				log.Printf("Failed to update access control cache: %v", err)
+			}
+		}
+
 		c.JSON(http.StatusOK, responses.NewSuccessResponse("Folder sharing updated successfully", existingShare))
 		return
 	} else if err != gorm.ErrRecordNotFound {
@@ -383,6 +476,21 @@ func (h *FolderHandler) ShareFolder(c *gin.Context) {
 		log.Printf("Failed to create share: %v", err)
 		c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to share folder", ""))
 		return
+	}
+
+	// Emit folder shared event for new share
+	if h.kafkaProducer != nil {
+		assetEvent := events.NewAssetSharingEvent(events.FolderShared, events.AssetTypeFolder, folderID, folder.OwnerID, currentUserID.(uuid.UUID), req.UserID, string(req.AccessLevel))
+		if err := h.kafkaProducer.PublishAssetEvent(context.Background(), assetEvent); err != nil {
+			log.Printf("Failed to publish folder shared event: %v", err)
+		}
+	}
+
+	// Update Redis access control cache
+	if h.redisService != nil {
+		if err := h.redisService.AddAssetAccess(context.Background(), folderID, req.UserID, string(req.AccessLevel)); err != nil {
+			log.Printf("Failed to update access control cache: %v", err)
+		}
 	}
 
 	if err := h.db.Preload("Folder").First(&share, "id = ?", share.ID).Error; err != nil {
@@ -458,6 +566,21 @@ func (h *FolderHandler) RevokeSharing(c *gin.Context) {
 		log.Printf("Failed to delete share: %v", err)
 		c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to revoke sharing", ""))
 		return
+	}
+
+	// Emit folder unshared event
+	if h.kafkaProducer != nil {
+		assetEvent := events.NewAssetSharingEvent(events.FolderUnshared, events.AssetTypeFolder, folderID, folder.OwnerID, currentUserID.(uuid.UUID), userID, "")
+		if err := h.kafkaProducer.PublishAssetEvent(context.Background(), assetEvent); err != nil {
+			log.Printf("Failed to publish folder unshared event: %v", err)
+		}
+	}
+
+	// Update Redis access control cache
+	if h.redisService != nil {
+		if err := h.redisService.RemoveAssetAccess(context.Background(), folderID, userID); err != nil {
+			log.Printf("Failed to update access control cache: %v", err)
+		}
 	}
 
 	c.JSON(http.StatusOK, responses.NewSuccessResponse("Folder sharing revoked successfully", nil))

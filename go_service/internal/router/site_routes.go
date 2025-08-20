@@ -13,8 +13,8 @@ import (
 func SetupRouter(router *gin.Engine, db *gorm.DB, kafkaProducer *kafka.Producer, redisService *redis.Service) {
 	// Create handlers
 	teamHandler := handlers.NewTeamHandler(db, kafkaProducer, redisService)
-	folderHandler := handlers.NewFolderHandler(db)
-	noteHandler := handlers.NewNoteHandler(db)
+	folderHandler := handlers.NewFolderHandler(db, kafkaProducer, redisService)
+	noteHandler := handlers.NewNoteHandler(db, kafkaProducer, redisService)
 	importHandler := handlers.NewImportHandler()
 
 	//v1 api

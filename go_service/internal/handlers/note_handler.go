@@ -1,10 +1,14 @@
 package handlers
 
 import (
+	"context"
 	"log"
 	"net/http"
 
+	"go_service/internal/events"
+	"go_service/internal/kafka"
 	"go_service/internal/models"
+	"go_service/internal/redis"
 	"go_service/internal/responses"
 
 	"github.com/gin-gonic/gin"
@@ -13,11 +17,17 @@ import (
 )
 
 type NoteHandler struct {
-	db *gorm.DB
+	db             *gorm.DB
+	kafkaProducer  *kafka.Producer
+	redisService   *redis.Service
 }
 
-func NewNoteHandler(db *gorm.DB) *NoteHandler {
-	return &NoteHandler{db: db}
+func NewNoteHandler(db *gorm.DB, kafkaProducer *kafka.Producer, redisService *redis.Service) *NoteHandler {
+	return &NoteHandler{
+		db:             db,
+		kafkaProducer:  kafkaProducer,
+		redisService:   redisService,
+	}
 }
 
 // CreateNote creates a new note inside a folder
@@ -96,6 +106,21 @@ func (h *NoteHandler) CreateNote(c *gin.Context) {
 		log.Printf("Failed to create note: %v", err)
 		c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to create note", ""))
 		return
+	}
+
+	// Emit note created event
+	if h.kafkaProducer != nil {
+		assetEvent := events.NewAssetEvent(events.NoteCreated, events.AssetTypeNote, note.ID, note.OwnerID, note.OwnerID)
+		if err := h.kafkaProducer.PublishAssetEvent(context.Background(), assetEvent); err != nil {
+			log.Printf("Failed to publish note created event: %v", err)
+		}
+	}
+
+	// Cache note metadata
+	if h.redisService != nil {
+		if err := h.redisService.SetNoteMetadata(context.Background(), &note); err != nil {
+			log.Printf("Failed to cache note metadata: %v", err)
+		}
 	}
 
 	c.JSON(http.StatusCreated, responses.NewSuccessResponse("Note created successfully", note))
@@ -404,6 +429,21 @@ func (h *NoteHandler) ShareNote(c *gin.Context) {
 			return
 		}
 
+		// Emit note shared event for update
+		if h.kafkaProducer != nil {
+			assetEvent := events.NewAssetSharingEvent(events.NoteShared, events.AssetTypeNote, noteID, note.OwnerID, currentUserID.(uuid.UUID), req.UserID, string(req.AccessLevel))
+			if err := h.kafkaProducer.PublishAssetEvent(context.Background(), assetEvent); err != nil {
+				log.Printf("Failed to publish note shared event: %v", err)
+			}
+		}
+
+		// Update Redis access control cache
+		if h.redisService != nil {
+			if err := h.redisService.AddAssetAccess(context.Background(), noteID, req.UserID, string(req.AccessLevel)); err != nil {
+				log.Printf("Failed to update access control cache: %v", err)
+			}
+		}
+
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"message": "Note sharing updated successfully",
@@ -435,6 +475,21 @@ func (h *NoteHandler) ShareNote(c *gin.Context) {
 			"error":   "Failed to share note",
 		})
 		return
+	}
+
+	// Emit note shared event for new share
+	if h.kafkaProducer != nil {
+		assetEvent := events.NewAssetSharingEvent(events.NoteShared, events.AssetTypeNote, noteID, note.OwnerID, currentUserID.(uuid.UUID), req.UserID, string(req.AccessLevel))
+		if err := h.kafkaProducer.PublishAssetEvent(context.Background(), assetEvent); err != nil {
+			log.Printf("Failed to publish note shared event: %v", err)
+		}
+	}
+
+	// Update Redis access control cache
+	if h.redisService != nil {
+		if err := h.redisService.AddAssetAccess(context.Background(), noteID, req.UserID, string(req.AccessLevel)); err != nil {
+			log.Printf("Failed to update access control cache: %v", err)
+		}
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
@@ -537,6 +592,21 @@ func (h *NoteHandler) RevokeNoteSharing(c *gin.Context) {
 			"error":   "Failed to revoke sharing",
 		})
 		return
+	}
+
+	// Emit note unshared event
+	if h.kafkaProducer != nil {
+		assetEvent := events.NewAssetSharingEvent(events.NoteUnshared, events.AssetTypeNote, noteID, note.OwnerID, currentUserID.(uuid.UUID), userID, "")
+		if err := h.kafkaProducer.PublishAssetEvent(context.Background(), assetEvent); err != nil {
+			log.Printf("Failed to publish note unshared event: %v", err)
+		}
+	}
+
+	// Update Redis access control cache
+	if h.redisService != nil {
+		if err := h.redisService.RemoveAssetAccess(context.Background(), noteID, userID); err != nil {
+			log.Printf("Failed to update access control cache: %v", err)
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
