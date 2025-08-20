@@ -9,8 +9,6 @@ import (
 	"gorm.io/gorm"
 )
 
-var DB *gorm.DB
-
 func CreateDSN() string {
 	return fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable TimeZone=Asia/Ho_Chi_Minh",
 		os.Getenv("DB_HOST"),
