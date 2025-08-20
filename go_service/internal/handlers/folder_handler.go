@@ -279,6 +279,21 @@ func (h *FolderHandler) UpdateFolder(c *gin.Context) {
 		return
 	}
 
+	// Emit folder updated event
+	if h.kafkaProducer != nil {
+		assetEvent := events.NewAssetEvent(events.FolderUpdated, events.AssetTypeFolder, folder.ID, folder.OwnerID, currentUserID.(uuid.UUID))
+		if err := h.kafkaProducer.PublishAssetEvent(context.Background(), assetEvent); err != nil {
+			log.Printf("Failed to publish folder updated event: %v", err)
+		}
+	}
+
+	// Invalidate and update cache with new data
+	if h.redisService != nil {
+		if err := h.redisService.SetFolderMetadata(context.Background(), &folder); err != nil {
+			log.Printf("Failed to update folder cache: %v", err)
+		}
+	}
+
 	c.JSON(http.StatusOK, responses.NewSuccessResponse("Folder updated successfully", folder))
 }
 
@@ -368,6 +383,21 @@ func (h *FolderHandler) DeleteFolder(c *gin.Context) {
 	}
 
 	tx.Commit()
+
+	// Emit folder deleted event
+	if h.kafkaProducer != nil {
+		assetEvent := events.NewAssetEvent(events.FolderDeleted, events.AssetTypeFolder, folder.ID, folder.OwnerID, currentUserID.(uuid.UUID))
+		if err := h.kafkaProducer.PublishAssetEvent(context.Background(), assetEvent); err != nil {
+			log.Printf("Failed to publish folder deleted event: %v", err)
+		}
+	}
+
+	// Invalidate cache
+	if h.redisService != nil {
+		if err := h.redisService.InvalidateFolderMetadata(context.Background(), folder.ID); err != nil {
+			log.Printf("Failed to invalidate folder cache: %v", err)
+		}
+	}
 
 	c.JSON(http.StatusOK, responses.NewSuccessResponse("Folder and all its contents deleted successfully", nil))
 }

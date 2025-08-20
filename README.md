@@ -9,11 +9,18 @@ A complete microservices system that provides user management through a **Node.j
 - **Node.js GraphQL Service (Port 4000)**: User management, authentication, JWT generation
 - **Go REST API Service (Port 8080)**: Team management, asset management, JWT validation
 
+### **Event-Driven Architecture:**
+
+- **Kafka Event Streaming**: Real-time event notifications for team and asset changes
+- **Redis Caching**: High-performance caching layer with automatic cache updates via Kafka consumers
+
 ### **Shared Resources:**
 
 - **PostgreSQL Database**: Shared schema with Node.js managing Users/Teams/Rosters, Go managing Assets
 - **JWT Authentication**: Node.js generates tokens, Go validates them
 - **User Roles**: Manager (can create teams) vs Member (team participants only)
+- **Kafka Topics**: `team.activity` and `asset.changes` for event streaming
+- **Redis Cache**: Team members, asset metadata, and access control lists
 
 ## 🚀 Features
 
@@ -42,6 +49,28 @@ A complete microservices system that provides user management through a **Node.j
 - ✅ Manager oversight of team assets
 - ✅ User asset browsing for managers
 
+### 🚀 Event-Driven Features (Kafka + Redis)
+
+#### 👥 Team Event Notifications
+- ✅ `TEAM_CREATED` - When a new team is created
+- ✅ `MEMBER_ADDED` - When members are added to teams
+- ✅ `MEMBER_REMOVED` - When members are removed from teams
+- ✅ `MANAGER_ADDED` - When members are promoted to managers
+- ✅ `MANAGER_REMOVED` - When managers are demoted
+
+#### 📁 Asset Event Notifications
+- ✅ `FOLDER_CREATED`, `FOLDER_UPDATED`, `FOLDER_DELETED`
+- ✅ `NOTE_CREATED`, `NOTE_UPDATED`, `NOTE_DELETED`
+- ✅ `FOLDER_SHARED`, `FOLDER_UNSHARED`
+- ✅ `NOTE_SHARED`, `NOTE_UNSHARED`
+
+#### ⚡ Redis Caching
+- ✅ **Team Member Cache**: `team:{teamId}:members` → list of userIds
+- ✅ **Asset Metadata Cache**: `folder:{folderId}` and `note:{noteId}` → metadata JSON
+- ✅ **Access Control Cache**: `asset:{assetId}:acl` → {userId: accessType}
+- ✅ **Cache-first Reads**: Automatic fallback to database on cache miss
+- ✅ **Event-driven Updates**: Kafka consumers automatically update cache
+
 ## 🛠 Tech Stack
 
 ### Go REST API Service
@@ -50,6 +79,8 @@ A complete microservices system that provides user management through a **Node.j
 - **ORM**: GORM with PostgreSQL
 - **Authentication**: JWT validation middleware
 - **UUID**: Google UUID for primary keys
+- **Event Streaming**: Segmentio Kafka-Go for event publishing
+- **Caching**: Go-Redis v9 for high-performance caching
 
 ### Node.js GraphQL Service
 
@@ -57,6 +88,17 @@ A complete microservices system that provides user management through a **Node.j
 - **ORM**: Sequelize with PostgreSQL
 - **Authentication**: JWT generation with jsonwebtoken
 - **Password**: bcrypt hashing
+
+### Event-Driven Infrastructure
+
+- **Apache Kafka**: Event streaming platform for real-time notifications
+  - Topics: `team.activity`, `asset.changes`
+  - Producers: Go REST API service
+  - Consumers: Cache updater service
+- **Redis**: In-memory data store for caching
+  - Team member lists
+  - Asset metadata
+  - Access control lists
 
 ### Database
 
@@ -69,11 +111,23 @@ A complete microservices system that provides user management through a **Node.j
 - **Go 1.23+**
 - **Node.js 18+**
 - **PostgreSQL 13+**
+- **Apache Kafka** (optional - for event streaming)
+- **Redis** (optional - for caching, will use localhost:6379 by default)
 - **Git**
 
 ## 🔧 Setup Instructions
 
-### 1. Install Dependencies
+### 1. Environment Configuration
+
+Copy the example environment file and configure:
+
+```bash
+# In go_service directory
+cp .env.example .env
+# Edit .env with your database, Kafka, and Redis settings
+```
+
+### 2. Install Dependencies
 
 ```bash
 # Go dependencies
@@ -83,7 +137,17 @@ go mod tidy
 # npm install (in Node.js service directory)
 ```
 
-### 2. Run Services
+### 3. Run Services
+
+**Start Infrastructure (optional but recommended):**
+
+```bash
+# Start Kafka (if using events)
+# Follow Kafka installation instructions for your OS
+
+# Start Redis (if using caching)
+redis-server
+```
 
 **Start Node.js GraphQL Service first (Port 4000):**
 
@@ -96,6 +160,13 @@ npm start
 
 ```bash
 go run cmd/server/main.go
+```
+
+**Start Kafka Consumer (optional - for cache updates):**
+
+```bash
+# In separate terminal
+go run cmd/consumer/main.go
 ```
 
 ## 🔗 Service Integration

@@ -879,28 +879,52 @@ func (h *TeamHandler) GetTeamAssets(c *gin.Context) {
 		return
 	}
 
-	// Get all team members
-	var rosters []models.Roster
-	if err := h.db.Where("\"teamId\" = ?", teamID).Find(&rosters).Error; err != nil {
-		log.Printf("Failed to fetch team members: %v", err)
-		c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to fetch team members", err.Error()))
-		return
+	// Get all team members - try cache first
+	var userIDs []uuid.UUID
+	var membersFromCache []uuid.UUID
+	
+	if h.redisService != nil {
+		membersFromCache, err = h.redisService.GetTeamMembers(context.Background(), int(teamID))
+		if err != nil {
+			log.Printf("Cache error when getting team members: %v", err)
+		}
 	}
+	
+	if membersFromCache != nil && len(membersFromCache) > 0 {
+		// Use cached data
+		userIDs = membersFromCache
+		log.Printf("Retrieved team %d members from cache", teamID)
+	} else {
+		// Get team members from database
+		var rosters []models.Roster
+		if err := h.db.Where("\"teamId\" = ?", teamID).Find(&rosters).Error; err != nil {
+			log.Printf("Failed to fetch team members: %v", err)
+			c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to fetch team members", err.Error()))
+			return
+		}
 
-	if len(rosters) == 0 {
-		c.JSON(http.StatusOK, responses.NewSuccessResponse("Team has no members", gin.H{
-			"teamId":   team.ID,
-			"teamName": team.TeamName,
-			"folders":  []interface{}{},
-			"notes":    []interface{}{},
-		}))
-		return
-	}
+		if len(rosters) == 0 {
+			c.JSON(http.StatusOK, responses.NewSuccessResponse("Team has no members", gin.H{
+				"teamId":   team.ID,
+				"teamName": team.TeamName,
+				"folders":  []interface{}{},
+				"notes":    []interface{}{},
+			}))
+			return
+		}
 
-	// Extract user IDs for query
-	userIDs := make([]uuid.UUID, len(rosters))
-	for i, roster := range rosters {
-		userIDs[i] = roster.UserID
+		// Extract user IDs and cache them
+		userIDs = make([]uuid.UUID, len(rosters))
+		for i, roster := range rosters {
+			userIDs[i] = roster.UserID
+		}
+		
+		// Cache the team members for future requests
+		if h.redisService != nil {
+			if err := h.redisService.SetTeamMembers(context.Background(), int(teamID), userIDs); err != nil {
+				log.Printf("Failed to cache team members: %v", err)
+			}
+		}
 	}
 
 	// Get folders owned by team members

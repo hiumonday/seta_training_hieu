@@ -278,6 +278,21 @@ func (h *NoteHandler) UpdateNote(c *gin.Context) {
 		return
 	}
 
+	// Emit note updated event
+	if h.kafkaProducer != nil {
+		assetEvent := events.NewAssetEvent(events.NoteUpdated, events.AssetTypeNote, note.ID, note.OwnerID, currentUserID.(uuid.UUID))
+		if err := h.kafkaProducer.PublishAssetEvent(context.Background(), assetEvent); err != nil {
+			log.Printf("Failed to publish note updated event: %v", err)
+		}
+	}
+
+	// Update cache with new data
+	if h.redisService != nil {
+		if err := h.redisService.SetNoteMetadata(context.Background(), &note); err != nil {
+			log.Printf("Failed to update note cache: %v", err)
+		}
+	}
+
 	c.JSON(http.StatusOK, responses.NewSuccessResponse("Note updated successfully", note))
 }
 
@@ -345,6 +360,21 @@ func (h *NoteHandler) DeleteNote(c *gin.Context) {
 	}
 
 	tx.Commit()
+
+	// Emit note deleted event
+	if h.kafkaProducer != nil {
+		assetEvent := events.NewAssetEvent(events.NoteDeleted, events.AssetTypeNote, note.ID, note.OwnerID, currentUserID.(uuid.UUID))
+		if err := h.kafkaProducer.PublishAssetEvent(context.Background(), assetEvent); err != nil {
+			log.Printf("Failed to publish note deleted event: %v", err)
+		}
+	}
+
+	// Invalidate cache
+	if h.redisService != nil {
+		if err := h.redisService.InvalidateNoteMetadata(context.Background(), note.ID); err != nil {
+			log.Printf("Failed to invalidate note cache: %v", err)
+		}
+	}
 
 	c.JSON(http.StatusOK, responses.NewSuccessResponse("Note deleted successfully", nil))
 }
