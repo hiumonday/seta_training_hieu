@@ -10,8 +10,8 @@ import (
 	"strings"
 	"sync"
 
-	"go_service/internal/responses"
 	"go_service/internal/services"
+	"go_service/pkg/responses"
 
 	"github.com/gin-gonic/gin"
 )

@@ -2,15 +2,16 @@ package router
 
 import (
 	"go_service/internal/handlers"
+	"go_service/internal/kafka"
 	"go_service/internal/middleware"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
-func SetupRouter(router *gin.Engine, db *gorm.DB) {
+func SetupRouter(router *gin.Engine, db *gorm.DB, producer *kafka.Producer) {
 	// Create handlers
-	teamHandler := handlers.NewTeamHandler(db)
+	teamHandler := handlers.NewTeamHandler(db, producer)
 	folderHandler := handlers.NewFolderHandler(db)
 	noteHandler := handlers.NewNoteHandler(db)
 	importHandler := handlers.NewImportHandler()

@@ -5,7 +5,7 @@ import (
 	"net/http"
 
 	"go_service/internal/models"
-	"go_service/internal/responses"
+	"go_service/pkg/responses"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"go_service/internal/database"
+	"go_service/internal/kafka"
 
 	// "go_service/internal/logger"
 	// "go_service/internal/middleware"
@@ -36,11 +37,23 @@ func main() {
 		log.Fatalf("Fail to connect DB: %v", err)
 	}
 
+	// Initialize Kafka producer
+	kafkaProducer, err := kafka.NewProducer(
+		os.Getenv("BOOTSTRAP_HOST"), // bootstrap servers
+		os.Getenv("KAFKA_USERNAME"), // username
+		os.Getenv("KAFKA_PASSWORD"), // password
+		"team.activity",             // topic
+	)
+	if err != nil {
+		log.Fatalf("Failed to create Kafka producer: %v", err)
+	}
+	defer kafkaProducer.Close()
+
 	// Setup Gin router
 	r := gin.Default()
 	// middleware.SetupPrometheus(r)
 	// r.Use(middleware.LoggerMiddleware())
-	router.SetupRouter(r, db)
+	router.SetupRouter(r, db, kafkaProducer)
 
 	port := os.Getenv("PORT")
 	if port == "" {

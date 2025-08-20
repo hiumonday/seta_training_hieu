@@ -7,9 +7,10 @@ import (
 	"strconv"
 	"strings"
 
+	"go_service/internal/kafka"
 	"go_service/internal/models"
-	"go_service/internal/responses"
 	"go_service/internal/services"
+	"go_service/pkg/responses"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -19,12 +20,14 @@ import (
 type TeamHandler struct {
 	db          *gorm.DB
 	userService *services.UserService
+	producer    *kafka.Producer
 }
 
-func NewTeamHandler(db *gorm.DB) *TeamHandler {
+func NewTeamHandler(db *gorm.DB, producer *kafka.Producer) *TeamHandler {
 	return &TeamHandler{
 		db:          db,
 		userService: services.NewUserService(),
+		producer:    producer,
 	}
 }
 
@@ -227,7 +230,7 @@ func (h *TeamHandler) AddMemberToTeam(c *gin.Context) {
 		UserID     uuid.UUID `json:"userId"`
 		Username   string    `json:"username"`
 		Status     string    `json:"status"`
-		StatusCode int       `json:"-"` // Chỉ dùng nội bộ, không trả về client
+		StatusCode int       `json:"-"`
 	}
 
 	results := make([]AddResult, 0, len(req.UserIDs))
@@ -331,6 +334,23 @@ func (h *TeamHandler) AddMemberToTeam(c *gin.Context) {
 			"error":   "Failed to save team members data",
 		})
 		return
+	}
+
+	if addedCount > 0 && h.producer != nil {
+		for _, result := range results {
+			if result.Status == "added_successfully" {
+				err := h.producer.SendTeamEvent(
+					kafka.EventMemberAdded,
+					teamID,
+					currentUserID.(uuid.UUID),
+					result.UserID,
+				)
+				if err != nil {
+					log.Printf("Failed to send Kafka event for member addition: %v", err)
+					// Continue processing even if Kafka event fails
+				}
+			}
+		}
 	}
 
 	var responseStatus int
