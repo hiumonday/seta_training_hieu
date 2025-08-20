@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"go_service/internal/models"
+	"go_service/internal/responses"
 	"go_service/internal/services"
 
 	"github.com/gin-gonic/gin"
@@ -34,7 +35,7 @@ func (h *TeamHandler) CreateTeam(c *gin.Context) {
 	roleStr, ok := role.(string)
 	if !exists || !ok || strings.ToUpper(roleStr) != "MANAGER" {
 		log.Println("Non-manager user tried to create a team")
-		c.JSON(http.StatusForbidden, gin.H{"error": "Only managers can create teams"})
+		c.JSON(http.StatusForbidden, responses.NewErrorResponse("Only managers can create teams", ""))
 		return
 	}
 
@@ -45,7 +46,7 @@ func (h *TeamHandler) CreateTeam(c *gin.Context) {
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		log.Println("Invalid request body for CreateTeam")
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, responses.NewErrorResponse(err.Error(), "Invalid request body"))
 		return
 	}
 
@@ -59,7 +60,7 @@ func (h *TeamHandler) CreateTeam(c *gin.Context) {
 	if err := tx.Create(&team).Error; err != nil {
 		tx.Rollback()
 		log.Println("Failed to create team")
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to create team"})
+		c.JSON(http.StatusBadRequest, responses.NewErrorResponse("Failed to create team", ""))
 		return
 	}
 
@@ -68,7 +69,7 @@ func (h *TeamHandler) CreateTeam(c *gin.Context) {
 	if !exists {
 		tx.Rollback()
 		log.Println("User ID not found in context")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "User not authenticated"})
+		c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("User not authenticated", "Missing user ID in context"))
 		return
 	}
 
@@ -84,7 +85,7 @@ func (h *TeamHandler) CreateTeam(c *gin.Context) {
 	if err := tx.Create(&leaderRoster).Error; err != nil {
 		tx.Rollback()
 		log.Println("Failed to create team leader roster entry")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to set team leader"})
+		c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to set team leader", ""))
 		return
 	}
 
@@ -142,7 +143,7 @@ func (h *TeamHandler) CreateTeam(c *gin.Context) {
 		response["failedMembers"] = failedMembers
 	}
 
-	c.JSON(http.StatusCreated, response)
+	c.JSON(http.StatusCreated, responses.NewSuccessResponse("Team created successfully", response))
 }
 
 func (h *TeamHandler) AddMemberToTeam(c *gin.Context) {
@@ -369,10 +370,7 @@ func (h *TeamHandler) RemoveMemberFromTeam(c *gin.Context) {
 	currentUserID, exists := c.Get("user_id")
 	if !exists {
 		log.Println("Unauthorized attempt to remove team member: missing user_id")
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"error":   "Authentication required",
-		})
+		c.JSON(http.StatusUnauthorized, responses.NewErrorResponse("Authentication required", "Missing user ID"))
 		return
 	}
 
@@ -381,10 +379,7 @@ func (h *TeamHandler) RemoveMemberFromTeam(c *gin.Context) {
 	teamID, err := strconv.ParseUint(teamIDStr, 10, 64)
 	if err != nil {
 		log.Printf("Invalid team ID format: %s", teamIDStr)
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   "Invalid team ID format",
-		})
+		c.JSON(http.StatusBadRequest, responses.NewErrorResponse("Invalid team ID format", ""))
 		return
 	}
 
@@ -393,10 +388,7 @@ func (h *TeamHandler) RemoveMemberFromTeam(c *gin.Context) {
 	memberID, err := uuid.Parse(memberIDStr)
 	if err != nil {
 		log.Printf("Invalid member ID format: %s", memberIDStr)
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   "Invalid member ID format",
-		})
+		c.JSON(http.StatusBadRequest, responses.NewErrorResponse("Invalid member ID format", ""))
 		return
 	}
 
@@ -405,17 +397,11 @@ func (h *TeamHandler) RemoveMemberFromTeam(c *gin.Context) {
 	if err := h.db.First(&team, teamID).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			log.Printf("Team not found: %d", teamID)
-			c.JSON(http.StatusNotFound, gin.H{
-				"success": false,
-				"error":   "Team not found",
-			})
+			c.JSON(http.StatusNotFound, responses.NewErrorResponse("Team not found", ""))
 			return
 		}
 		log.Printf("Database error when finding team: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Failed to verify team",
-		})
+		c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to verify team", err.Error()))
 		return
 	}
 
@@ -424,17 +410,11 @@ func (h *TeamHandler) RemoveMemberFromTeam(c *gin.Context) {
 	if err := h.db.Where("\"teamId\" = ? AND \"userId\" = ? AND \"isLeader\" = ?", teamID, currentUserID, true).First(&leaderRoster).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			log.Printf("User %s attempted to remove member from team %d without leadership permission", currentUserID, teamID)
-			c.JSON(http.StatusForbidden, gin.H{
-				"success": false,
-				"error":   "Only team leaders can remove members",
-			})
+			c.JSON(http.StatusForbidden, responses.NewErrorResponse("Only team leaders can remove members", ""))
 			return
 		}
 		log.Printf("Database error when checking leadership: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Failed to verify team leadership",
-		})
+		c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to verify team leadership", err.Error()))
 		return
 	}
 
@@ -443,17 +423,11 @@ func (h *TeamHandler) RemoveMemberFromTeam(c *gin.Context) {
 	if err := h.db.Where("\"teamId\" = ? AND \"userId\" = ?", teamID, memberID).First(&memberRoster).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			log.Printf("Member %s not found in team %d", memberID, teamID)
-			c.JSON(http.StatusNotFound, gin.H{
-				"success": false,
-				"error":   "Member not found in this team",
-			})
+			c.JSON(http.StatusNotFound, responses.NewErrorResponse("Member not found in this team", ""))
 			return
 		}
 		log.Printf("Database error when checking member: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Failed to verify team membership",
-		})
+		c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to verify team membership", err.Error()))
 		return
 	}
 
@@ -463,19 +437,13 @@ func (h *TeamHandler) RemoveMemberFromTeam(c *gin.Context) {
 		var leaderCount int64
 		if err := h.db.Model(&models.Roster{}).Where("\"teamId\" = ? AND \"isLeader\" = ?", teamID, true).Count(&leaderCount).Error; err != nil {
 			log.Printf("Error counting team leaders: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"success": false,
-				"error":   "Failed to verify team leadership status",
-			})
+			c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to verify team leadership status", err.Error()))
 			return
 		}
 
 		if leaderCount <= 1 {
 			log.Printf("User %s attempted to remove self as the only leader of team %d", currentUserID, teamID)
-			c.JSON(http.StatusForbidden, gin.H{
-				"success": false,
-				"error":   "Cannot remove yourself as the only team leader. Assign another leader first.",
-			})
+			c.JSON(http.StatusForbidden, responses.NewErrorResponse("Cannot remove yourself as the only team leader. Assign another leader first.", ""))
 			return
 		}
 	}
@@ -483,10 +451,7 @@ func (h *TeamHandler) RemoveMemberFromTeam(c *gin.Context) {
 	// Remove member
 	if err := h.db.Delete(&memberRoster).Error; err != nil {
 		log.Printf("Failed to remove member %s from team %d: %v", memberID, teamID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Failed to remove member from team",
-		})
+		c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to remove member from team", err.Error()))
 		return
 	}
 
@@ -497,17 +462,13 @@ func (h *TeamHandler) RemoveMemberFromTeam(c *gin.Context) {
 		username = userResp.User.Username
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "Member removed from team successfully",
-		"data": gin.H{
-			"teamId":    team.ID,
-			"teamName":  team.TeamName,
-			"memberId":  memberID,
-			"username":  username,
-			"wasLeader": memberRoster.IsLeader,
-		},
-	})
+	c.JSON(http.StatusOK, responses.NewSuccessResponse("Member removed from team successfully", gin.H{
+		"teamId":    team.ID,
+		"teamName":  team.TeamName,
+		"memberId":  memberID,
+		"username":  username,
+		"wasLeader": memberRoster.IsLeader,
+	}))
 }
 
 // AddManagerToTeam promotes a member to team manager/leader
@@ -699,10 +660,7 @@ func (h *TeamHandler) RemoveManagerFromTeam(c *gin.Context) {
 	currentUserID, exists := c.Get("user_id")
 	if !exists {
 		log.Println("Unauthorized attempt to remove team manager: missing user_id")
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"error":   "Authentication required",
-		})
+		c.JSON(http.StatusUnauthorized, responses.NewErrorResponse("Authentication required", "Missing user ID"))
 		return
 	}
 
@@ -711,10 +669,7 @@ func (h *TeamHandler) RemoveManagerFromTeam(c *gin.Context) {
 	teamID, err := strconv.ParseUint(teamIDStr, 10, 64)
 	if err != nil {
 		log.Printf("Invalid team ID format: %s", teamIDStr)
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   "Invalid team ID format",
-		})
+		c.JSON(http.StatusBadRequest, responses.NewErrorResponse("Invalid team ID format", ""))
 		return
 	}
 
@@ -723,10 +678,7 @@ func (h *TeamHandler) RemoveManagerFromTeam(c *gin.Context) {
 	managerID, err := uuid.Parse(managerIDStr)
 	if err != nil {
 		log.Printf("Invalid manager ID format: %s", managerIDStr)
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   "Invalid manager ID format",
-		})
+		c.JSON(http.StatusBadRequest, responses.NewErrorResponse("Invalid manager ID format", ""))
 		return
 	}
 
@@ -735,17 +687,11 @@ func (h *TeamHandler) RemoveManagerFromTeam(c *gin.Context) {
 	if err := h.db.First(&team, teamID).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			log.Printf("Team not found: %d", teamID)
-			c.JSON(http.StatusNotFound, gin.H{
-				"success": false,
-				"error":   "Team not found",
-			})
+			c.JSON(http.StatusNotFound, responses.NewErrorResponse("Team not found", ""))
 			return
 		}
 		log.Printf("Database error when finding team: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Failed to verify team",
-		})
+		c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to verify team", err.Error()))
 		return
 	}
 
@@ -754,17 +700,11 @@ func (h *TeamHandler) RemoveManagerFromTeam(c *gin.Context) {
 	if err := h.db.Where("\"teamId\" = ? AND \"userId\" = ? AND \"isLeader\" = ?", teamID, currentUserID, true).First(&leaderRoster).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			log.Printf("User %s attempted to remove manager from team %d without leadership permission", currentUserID, teamID)
-			c.JSON(http.StatusForbidden, gin.H{
-				"success": false,
-				"error":   "Only team leaders can remove managers",
-			})
+			c.JSON(http.StatusForbidden, responses.NewErrorResponse("Only team leaders can remove managers", ""))
 			return
 		}
 		log.Printf("Database error when checking leadership: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Failed to verify team leadership",
-		})
+		c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to verify team leadership", err.Error()))
 		return
 	}
 
@@ -773,26 +713,17 @@ func (h *TeamHandler) RemoveManagerFromTeam(c *gin.Context) {
 	if err := h.db.Where("\"teamId\" = ? AND \"userId\" = ?", teamID, managerID).First(&managerRoster).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			log.Printf("Manager %s not found in team %d", managerID, teamID)
-			c.JSON(http.StatusNotFound, gin.H{
-				"success": false,
-				"error":   "Manager not found in this team",
-			})
+			c.JSON(http.StatusNotFound, responses.NewErrorResponse("Manager not found in this team", ""))
 			return
 		}
 		log.Printf("Database error when checking manager: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Failed to verify team membership",
-		})
+		c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to verify team membership", err.Error()))
 		return
 	}
 
 	if !managerRoster.IsLeader {
 		log.Printf("User %s is not a manager of team %d", managerID, teamID)
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   "User is not a manager of this team",
-		})
+		c.JSON(http.StatusBadRequest, responses.NewErrorResponse("User is not a manager of this team", ""))
 		return
 	}
 
@@ -800,19 +731,13 @@ func (h *TeamHandler) RemoveManagerFromTeam(c *gin.Context) {
 	var leaderCount int64
 	if err := h.db.Model(&models.Roster{}).Where("\"teamId\" = ? AND \"isLeader\" = ?", teamID, true).Count(&leaderCount).Error; err != nil {
 		log.Printf("Error counting team leaders: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Failed to verify team leadership status",
-		})
+		c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to verify team leadership status", err.Error()))
 		return
 	}
 
 	if leaderCount <= 1 {
 		log.Printf("Attempted to remove the only leader from team %d", teamID)
-		c.JSON(http.StatusForbidden, gin.H{
-			"success": false,
-			"error":   "Cannot remove the only team leader. Assign another leader first.",
-		})
+		c.JSON(http.StatusForbidden, responses.NewErrorResponse("Cannot remove the only team leader. Assign another leader first.", ""))
 		return
 	}
 
@@ -820,10 +745,7 @@ func (h *TeamHandler) RemoveManagerFromTeam(c *gin.Context) {
 	managerRoster.IsLeader = false
 	if err := h.db.Save(&managerRoster).Error; err != nil {
 		log.Printf("Failed to demote manager %s from team %d: %v", managerID, teamID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Failed to demote manager",
-		})
+		c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to demote manager", err.Error()))
 		return
 	}
 
@@ -834,16 +756,12 @@ func (h *TeamHandler) RemoveManagerFromTeam(c *gin.Context) {
 		username = userResp.User.Username
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "Manager demoted successfully",
-		"data": gin.H{
-			"teamId":   team.ID,
-			"teamName": team.TeamName,
-			"userId":   managerID,
-			"username": username,
-		},
-	})
+	c.JSON(http.StatusOK, responses.NewSuccessResponse("Manager demoted successfully", gin.H{
+		"teamId":   team.ID,
+		"teamName": team.TeamName,
+		"userId":   managerID,
+		"username": username,
+	}))
 }
 
 // GetTeamAssets retrieves all assets (folders and notes) that team members own or can access
@@ -852,10 +770,7 @@ func (h *TeamHandler) GetTeamAssets(c *gin.Context) {
 	role, exists := c.Get("role")
 	if !exists || role != "MANAGER" {
 		log.Printf("Unauthorized access attempt: role required is MANAGER, got %v", role)
-		c.JSON(http.StatusForbidden, gin.H{
-			"success": false,
-			"error":   "Only managers can access team assets",
-		})
+		c.JSON(http.StatusForbidden, responses.NewErrorResponse("Only managers can access team assets", ""))
 		return
 	}
 	// Parse team ID
@@ -863,10 +778,7 @@ func (h *TeamHandler) GetTeamAssets(c *gin.Context) {
 	teamID, err := strconv.ParseUint(teamIDStr, 10, 64)
 	if err != nil {
 		log.Printf("Invalid team ID format: %s", teamIDStr)
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   "Invalid team ID format",
-		})
+		c.JSON(http.StatusBadRequest, responses.NewErrorResponse("Invalid team ID format", ""))
 		return
 	}
 
@@ -875,17 +787,11 @@ func (h *TeamHandler) GetTeamAssets(c *gin.Context) {
 	if err := h.db.First(&team, teamID).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			log.Printf("Team not found: %d", teamID)
-			c.JSON(http.StatusNotFound, gin.H{
-				"success": false,
-				"error":   "Team not found",
-			})
+			c.JSON(http.StatusNotFound, responses.NewErrorResponse("Team not found", ""))
 			return
 		}
 		log.Printf("Database error when finding team: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Failed to verify team",
-		})
+		c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to verify team", err.Error()))
 		return
 	}
 
@@ -893,24 +799,17 @@ func (h *TeamHandler) GetTeamAssets(c *gin.Context) {
 	var rosters []models.Roster
 	if err := h.db.Where("\"teamId\" = ?", teamID).Find(&rosters).Error; err != nil {
 		log.Printf("Failed to fetch team members: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Failed to fetch team members",
-		})
+		c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to fetch team members", err.Error()))
 		return
 	}
 
 	if len(rosters) == 0 {
-		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"message": "Team has no members",
-			"data": gin.H{
-				"teamId":   team.ID,
-				"teamName": team.TeamName,
-				"folders":  []interface{}{},
-				"notes":    []interface{}{},
-			},
-		})
+		c.JSON(http.StatusOK, responses.NewSuccessResponse("Team has no members", gin.H{
+			"teamId":   team.ID,
+			"teamName": team.TeamName,
+			"folders":  []interface{}{},
+			"notes":    []interface{}{},
+		}))
 		return
 	}
 
