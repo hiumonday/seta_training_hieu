@@ -9,6 +9,7 @@ import (
 
 	"go_service/internal/kafka"
 	"go_service/internal/models"
+	"go_service/internal/redisclient"
 	"go_service/internal/services"
 	"go_service/pkg/responses"
 
@@ -21,13 +22,15 @@ type TeamHandler struct {
 	db          *gorm.DB
 	userService *services.UserService
 	producer    *kafka.Producer
+	redisClient *redisclient.TeamCache
 }
 
-func NewTeamHandler(db *gorm.DB, producer *kafka.Producer) *TeamHandler {
+func NewTeamHandler(db *gorm.DB, producer *kafka.Producer, redisClient *redisclient.TeamCache) *TeamHandler {
 	return &TeamHandler{
 		db:          db,
 		userService: services.NewUserService(),
 		producer:    producer,
+		redisClient: redisClient,
 	}
 }
 
@@ -335,7 +338,7 @@ func (h *TeamHandler) AddMemberToTeam(c *gin.Context) {
 		})
 		return
 	}
-
+	//emit MEMBER_ADDED
 	if addedCount > 0 && h.producer != nil {
 		for _, result := range results {
 			if result.Status == "added_successfully" {
@@ -473,6 +476,16 @@ func (h *TeamHandler) RemoveMemberFromTeam(c *gin.Context) {
 		log.Printf("Failed to remove member %s from team %d: %v", memberID, teamID, err)
 		c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to remove member from team", err.Error()))
 		return
+	}
+
+	if err := h.producer.SendTeamEvent(
+		kafka.EventMemberRemoved,
+		teamID,
+		currentUserID.(uuid.UUID),
+		memberID,
+	); err != nil {
+		log.Printf("Failed to send Kafka event for member removed: %v", err)
+		// Continue processing even if Kafka event fails
 	}
 
 	// Fetch username for response
@@ -781,6 +794,103 @@ func (h *TeamHandler) RemoveManagerFromTeam(c *gin.Context) {
 		"teamName": team.TeamName,
 		"userId":   managerID,
 		"username": username,
+	}))
+}
+
+// GetTeamMembers returns all members of a team
+func (h *TeamHandler) GetTeamMembers(c *gin.Context) {
+
+	teamIDStr := c.Param("teamId")
+	teamID, err := strconv.ParseUint(teamIDStr, 10, 64)
+	if err != nil {
+		log.Printf("Invalid team ID format: %s", teamIDStr)
+		c.JSON(http.StatusBadRequest, responses.NewErrorResponse("Invalid team ID format", ""))
+		return
+	}
+
+	// Check if team exists
+	var team models.Team
+	if err := h.db.First(&team, teamID).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			log.Printf("Team not found: %d", teamID)
+			c.JSON(http.StatusNotFound, responses.NewErrorResponse("Team not found", ""))
+			return
+		}
+		log.Printf("Database error when finding team: %v", err)
+		c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to verify team", err.Error()))
+		return
+	}
+
+	// Try to get team members from Redis cache first
+	var members []models.Roster
+	var userInfos []map[string]interface{}
+	var cacheHit bool
+
+	if h.redisClient != nil {
+		ctx := c.Request.Context()
+
+		// Get team members from cache
+		userIDs, err := h.redisClient.GetMembers(ctx, teamID)
+		if err == nil && len(userIDs) > 0 {
+			log.Printf("Cache hit for team %d members", teamID)
+
+			if err := h.db.Where("\"teamId\" = ? AND \"userId\" IN ?", teamID, userIDs).Find(&members).Error; err != nil {
+				log.Printf("Error fetching roster details: %v", err)
+				// Will continue to full DB fetch
+			} else {
+				cacheHit = true
+			}
+		}
+	}
+
+	// Fallback to database if cache miss
+	if !cacheHit {
+		if err := h.db.Where("\"teamId\" = ?", teamID).Find(&members).Error; err != nil {
+			log.Printf("Failed to fetch team members: %v", err)
+			c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to fetch team members", err.Error()))
+			return
+		}
+
+		// Update cache with DB results
+		if h.redisClient != nil && len(members) > 0 {
+			ctx := c.Request.Context()
+
+			// Convert roster entries to user IDs for cache
+			userIDs := make([]interface{}, len(members))
+			for i, member := range members {
+				userIDs[i] = member.UserID.String()
+			}
+
+			// Store in Redis
+			if err := h.redisClient.StoreMembers(ctx, teamID, userIDs); err != nil {
+				log.Printf("Failed to update cache: %v", err)
+				// Non-critical error, continue
+			}
+		}
+	}
+
+	// Prepare response data
+	userInfos = make([]map[string]interface{}, 0, len(members))
+	for _, member := range members {
+		// Get user details from user service
+		userResp, err := h.userService.GetUserByID(member.UserID.String())
+		username := ""
+		if err == nil && userResp != nil && userResp.User != nil {
+			username = userResp.User.Username
+		}
+
+		userInfo := map[string]interface{}{
+			"userId":   member.UserID,
+			"username": username,
+			"isLeader": member.IsLeader,
+		}
+		userInfos = append(userInfos, userInfo)
+	}
+
+	c.JSON(http.StatusOK, responses.NewSuccessResponse("Team members retrieved successfully", gin.H{
+		"teamId":   team.ID,
+		"teamName": team.TeamName,
+		"members":  userInfos,
 	}))
 }
 

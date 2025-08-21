@@ -11,6 +11,7 @@ import (
 
 	"go_service/internal/database"
 	"go_service/internal/kafka"
+	"go_service/internal/redisclient"
 
 	// "go_service/internal/logger"
 	// "go_service/internal/middleware"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -36,6 +38,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("Fail to connect DB: %v", err)
 	}
+	redis_client := redis.NewClient(&redis.Options{
+		Addr:     os.Getenv("REDIS_ADDRESS"),
+		Password: os.Getenv("REDIS_PASSWORD"),
+		DB:       0, // Use default DB
+		Protocol: 2, // Connection protocol
+	})
+	teamCache := redisclient.NewTeamCache(redis_client)
 
 	// Initialize Kafka producer
 	kafkaProducer, err := kafka.NewProducer(
@@ -53,7 +62,7 @@ func main() {
 	r := gin.Default()
 	// middleware.SetupPrometheus(r)
 	// r.Use(middleware.LoggerMiddleware())
-	router.SetupRouter(r, db, kafkaProducer)
+	router.SetupRouter(r, db, kafkaProducer, teamCache)
 
 	port := os.Getenv("PORT")
 	if port == "" {
