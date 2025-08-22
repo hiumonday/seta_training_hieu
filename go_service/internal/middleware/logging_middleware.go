@@ -3,7 +3,7 @@ package middleware
 import (
 	"time"
 
-	"go_service/internal/logger"
+	"go_service/pkg/logger"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"

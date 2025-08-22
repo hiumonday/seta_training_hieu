@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"go_service/internal/services"
+	"go_service/pkg/responses"
 
 	"github.com/gin-gonic/gin"
 )
@@ -41,11 +42,11 @@ func (h *ImportHandler) ImportUsers(c *gin.Context) {
 		log.Printf("Error getting file from request: %v", err)
 
 		// Check if the form was submitted correctly
-		if err := c.Request.ParseMultipartForm(10 << 20); err != nil { // 10 MB max
-			c.JSON(http.StatusBadRequest, gin.H{
-				"success": false,
-				"error":   "Failed to parse form data: " + err.Error(),
-			})
+		if err := c.Request.ParseMultipartForm(10 << 20); err != nil {
+			c.JSON(http.StatusBadRequest, responses.NewErrorResponse(
+				"Failed to parse form data",
+				err.Error(),
+			))
 			return
 		}
 
@@ -53,11 +54,10 @@ func (h *ImportHandler) ImportUsers(c *gin.Context) {
 		log.Printf("Form values: %v", c.Request.Form)
 		log.Printf("File values: %v", c.Request.MultipartForm.File)
 
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   "No file was uploaded or invalid file field. Please use 'file' as the form field name.",
-			"details": err.Error(),
-		})
+		c.JSON(http.StatusBadRequest, responses.NewErrorResponse(
+			"No file was uploaded or invalid file field. Please use 'file' as the form field name.",
+			err.Error(),
+		))
 		return
 	}
 	defer file.Close()
@@ -69,10 +69,10 @@ func (h *ImportHandler) ImportUsers(c *gin.Context) {
 	// Check if the file is a CSV
 	if !strings.HasSuffix(strings.ToLower(header.Filename), ".csv") &&
 		header.Header.Get("Content-Type") != "text/csv" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   "Uploaded file must be a CSV file",
-		})
+		c.JSON(http.StatusBadRequest, responses.NewErrorResponse(
+			"Uploaded file must be a CSV file",
+			"",
+		))
 		return
 	}
 
@@ -84,10 +84,10 @@ func (h *ImportHandler) ImportUsers(c *gin.Context) {
 	csvHeaders, err := reader.Read()
 	if err != nil {
 		log.Printf("Error reading CSV header: %v", err)
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   "Invalid CSV format: could not read header",
-		})
+		c.JSON(http.StatusBadRequest, responses.NewErrorResponse(
+			"Failed to read CSV header",
+			err.Error(),
+		))
 		return
 	}
 
@@ -95,11 +95,10 @@ func (h *ImportHandler) ImportUsers(c *gin.Context) {
 	expectedHeaders := []string{"username", "email", "password", "role"}
 	if !validateHeaders(csvHeaders, expectedHeaders) {
 		log.Printf("Invalid CSV headers: %v", csvHeaders)
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   "Invalid CSV format: header must contain username, email, password, role",
-			"found":   csvHeaders,
-		})
+		c.JSON(http.StatusBadRequest, responses.NewErrorResponse(
+			"Invalid CSV format: header must contain username, email, password, role",
+			fmt.Sprintf("Found headers: %v", csvHeaders),
+		))
 		return
 	}
 
@@ -157,10 +156,9 @@ func (h *ImportHandler) ImportUsers(c *gin.Context) {
 	<-resultsDone
 
 	// Return summary
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": fmt.Sprintf("Imported %d users, %d succeeded, %d failed", len(allResults), successCount, failCount),
-		"data": gin.H{
+	c.JSON(http.StatusOK, responses.NewSuccessResponse(
+		fmt.Sprintf("Imported %d users, %d succeeded, %d failed", len(allResults), successCount, failCount),
+		gin.H{
 			"total":     len(allResults),
 			"success":   successCount,
 			"failed":    failCount,
@@ -168,7 +166,7 @@ func (h *ImportHandler) ImportUsers(c *gin.Context) {
 			"totalRows": rowCount,
 			"fileName":  header.Filename,
 		},
-	})
+	))
 }
 
 // worker processes user creation jobs

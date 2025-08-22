@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"go_service/internal/database"
+	"go_service/internal/kafka"
+	"go_service/internal/redisclient"
 
 	// "go_service/internal/logger"
 	// "go_service/internal/middleware"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -35,12 +38,31 @@ func main() {
 	if err != nil {
 		log.Fatalf("Fail to connect DB: %v", err)
 	}
+	redis_client := redis.NewClient(&redis.Options{
+		Addr:     os.Getenv("REDIS_ADDRESS"),
+		Password: os.Getenv("REDIS_PASSWORD"),
+		DB:       0, // Use default DB
+		Protocol: 2, // Connection protocol
+	})
+	teamCache := redisclient.NewTeamCache(redis_client)
+
+	// Initialize Kafka producer
+	kafkaProducer, err := kafka.NewProducer(
+		os.Getenv("BOOTSTRAP_HOST"), // bootstrap servers
+		os.Getenv("KAFKA_USERNAME"), // username
+		os.Getenv("KAFKA_PASSWORD"), // password
+		"team.activity",             // topic
+	)
+	if err != nil {
+		log.Fatalf("Failed to create Kafka producer: %v", err)
+	}
+	defer kafkaProducer.Close()
 
 	// Setup Gin router
 	r := gin.Default()
 	// middleware.SetupPrometheus(r)
 	// r.Use(middleware.LoggerMiddleware())
-	router.SetupRouter(r, db)
+	router.SetupRouter(r, db, kafkaProducer, teamCache)
 
 	port := os.Getenv("PORT")
 	if port == "" {
