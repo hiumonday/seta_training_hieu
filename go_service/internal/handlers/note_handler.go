@@ -133,7 +133,7 @@ func (h *NoteHandler) GetNote(c *gin.Context) {
 		return
 	}
 
-	// Check permissions - owner has direct access
+	// Check permissions - owner has access directly
 	if note.OwnerID == currentUserID.(uuid.UUID) {
 		c.JSON(http.StatusOK, responses.NewSuccessResponse("Note retrieved successfully", note))
 		return

@@ -504,7 +504,7 @@ func (h *TeamHandler) RemoveMemberFromTeam(c *gin.Context) {
 	}))
 }
 
-// AddManagerToTeam promotes a member to team manager/leader
+// AddManagerToTeam promotes a member to team manager/leader (only manager)
 func (h *TeamHandler) AddManagerToTeam(c *gin.Context) {
 	currentUserID, exists := c.Get("user_id")
 	if !exists {
@@ -512,6 +512,15 @@ func (h *TeamHandler) AddManagerToTeam(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"success": false,
 			"error":   "Authentication required",
+		})
+		return
+	}
+	role, exists := c.Get("role")
+	if !exists || role != "MANAGER" {
+		log.Println("Unauthorized attempt to add team manager: insufficient permissions")
+		c.JSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"error":   "Only team managers can add managers",
 		})
 		return
 	}
@@ -688,12 +697,22 @@ func (h *TeamHandler) AddManagerToTeam(c *gin.Context) {
 	})
 }
 
-// RemoveManagerFromTeam demotes a team manager/leader to a regular member
+// RemoveManagerFromTeam demotes a team manager/leader to a regular member (only manager)
 func (h *TeamHandler) RemoveManagerFromTeam(c *gin.Context) {
 	currentUserID, exists := c.Get("user_id")
 	if !exists {
 		log.Println("Unauthorized attempt to remove team manager: missing user_id")
 		c.JSON(http.StatusUnauthorized, responses.NewErrorResponse("Authentication required", "Missing user ID"))
+		return
+	}
+
+	role, exists := c.Get("role")
+	if !exists || role != "MANAGER" {
+		log.Println("Unauthorized attempt to add team manager: insufficient permissions")
+		c.JSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"error":   "Only team managers can add managers",
+		})
 		return
 	}
 
