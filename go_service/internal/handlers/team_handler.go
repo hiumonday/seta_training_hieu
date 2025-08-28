@@ -21,6 +21,7 @@ import (
 type TeamHandler struct {
 	db          *gorm.DB
 	userService *services.UserService
+	service     *services.TeamService
 	producer    *kafka.Producer
 	redisClient *redisclient.TeamCache
 }
@@ -29,6 +30,7 @@ func NewTeamHandler(db *gorm.DB, producer *kafka.Producer, redisClient *rediscli
 	return &TeamHandler{
 		db:          db,
 		userService: services.NewUserService(),
+		service:     services.NewTeamService(db, producer, redisClient),
 		producer:    producer,
 		redisClient: redisClient,
 	}
@@ -36,12 +38,9 @@ func NewTeamHandler(db *gorm.DB, producer *kafka.Producer, redisClient *rediscli
 
 // CreateTeam creates a new team with members (only managers can create teams)
 func (h *TeamHandler) CreateTeam(c *gin.Context) {
-	// Lấy vai trò từ context để kiểm tra quyền
 	role, exists := c.Get("role")
-	roleStr, ok := role.(string)
-	if !exists || !ok || strings.ToUpper(roleStr) != "MANAGER" {
-		log.Println("Non-manager user tried to create a team")
-		c.JSON(http.StatusForbidden, responses.NewErrorResponse("Only managers can create teams", ""))
+	if !exists || strings.ToUpper(role.(string)) != "MANAGER" {
+		c.JSON(http.StatusForbidden, responses.NewErrorResponse("Unauthorized", "Insufficient permissions"))
 		return
 	}
 
@@ -49,106 +48,24 @@ func (h *TeamHandler) CreateTeam(c *gin.Context) {
 		TeamName string      `json:"teamName" binding:"required"`
 		UserIDs  []uuid.UUID `json:"userIds"`
 	}
-
 	if err := c.ShouldBindJSON(&req); err != nil {
-		log.Println("Invalid request body for CreateTeam")
-		c.JSON(http.StatusBadRequest, responses.NewErrorResponse(err.Error(), "Invalid request body"))
+		c.JSON(http.StatusBadRequest, responses.NewErrorResponse("Invalid request format:", err.Error()))
 		return
 	}
 
-	tx := h.db.Begin()
-
-	// Tạo team mới
-	team := models.Team{
-		TeamName: req.TeamName,
-	}
-
-	if err := tx.Create(&team).Error; err != nil {
-		tx.Rollback()
-		log.Println("Failed to create team")
-		c.JSON(http.StatusBadRequest, responses.NewErrorResponse("Failed to create team", ""))
-		return
-	}
-
-	// Thêm người tạo vào team và đặt làm leader
-	userID, exists := c.Get("user_id")
-	if !exists {
-		tx.Rollback()
-		log.Println("User ID not found in context")
-		c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("User not authenticated", "Missing user ID in context"))
-		return
-	}
-
+	userID, _ := c.Get("user_id")
 	creatorID := userID.(uuid.UUID)
 
-	// Thêm người tạo làm leader
-	leaderRoster := models.Roster{
-		TeamID:   team.ID,
-		UserID:   creatorID,
-		IsLeader: true,
-	}
-
-	if err := tx.Create(&leaderRoster).Error; err != nil {
-		tx.Rollback()
-		log.Println("Failed to create team leader roster entry")
-		c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to set team leader", ""))
+	team, failedMembers, err := h.service.CreateTeam(req.TeamName, req.UserIDs, creatorID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, responses.NewErrorResponse("Failed to create team:", err.Error()))
 		return
 	}
 
-	// Thêm các thành viên khác vào team
-	addedMembers := []uuid.UUID{creatorID} // Đã thêm người tạo
-	failedMembers := []uuid.UUID{}
-
-	for _, memberID := range req.UserIDs {
-		// Kiểm tra nếu userID đã được thêm vào (tránh thêm trùng)
-		alreadyAdded := false
-		for _, id := range addedMembers {
-			if id == memberID {
-				alreadyAdded = true
-				break
-			}
-		}
-
-		if alreadyAdded {
-			continue
-		}
-
-		if _, err := h.userService.GetUserByID(memberID.String()); err != nil {
-			// User không tồn tại hoặc có lỗi khi gọi service
-			log.Printf("Failed to verify user %s: %v", memberID, err)
-			failedMembers = append(failedMembers, memberID)
-			continue
-		}
-
-		// Thêm user vào team
-		roster := models.Roster{
-			TeamID:   team.ID,
-			UserID:   memberID,
-			IsLeader: false,
-		}
-
-		if err := tx.Create(&roster).Error; err != nil {
-			failedMembers = append(failedMembers, memberID)
-			log.Printf("Failed to add member %s to team: %v", memberID, err)
-			continue
-		}
-
-		addedMembers = append(addedMembers, memberID)
-	}
-
-	tx.Commit()
-
-	response := gin.H{
-		"message": "Team created successfully",
-		"team":    team,
-	}
-
-	// Nếu có thành viên không được thêm vào, báo cáo lại
+	response := gin.H{"message": "Team created successfully", "team": team}
 	if len(failedMembers) > 0 {
-		response["warning"] = "Some members could not be added to the team"
 		response["failedMembers"] = failedMembers
 	}
-
 	c.JSON(http.StatusCreated, responses.NewSuccessResponse("Team created successfully", response))
 }
 
