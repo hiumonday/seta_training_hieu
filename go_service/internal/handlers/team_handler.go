@@ -22,6 +22,7 @@ type TeamHandler struct {
 	db          *gorm.DB
 	userService *services.UserService
 	service     *services.TeamService
+
 	producer    *kafka.Producer
 	redisClient *redisclient.TeamCache
 }
@@ -39,8 +40,10 @@ func NewTeamHandler(db *gorm.DB, producer *kafka.Producer, redisClient *rediscli
 // CreateTeam creates a new team with members (only managers can create teams)
 func (h *TeamHandler) CreateTeam(c *gin.Context) {
 	role, exists := c.Get("role")
+
 	if !exists || strings.ToUpper(role.(string)) != "MANAGER" {
 		c.JSON(http.StatusForbidden, responses.NewErrorResponse("Unauthorized", "Insufficient permissions"))
+
 		return
 	}
 
@@ -66,6 +69,7 @@ func (h *TeamHandler) CreateTeam(c *gin.Context) {
 	if len(failedMembers) > 0 {
 		response["failedMembers"] = failedMembers
 	}
+
 	c.JSON(http.StatusCreated, responses.NewSuccessResponse("Team created successfully", response))
 }
 
@@ -630,6 +634,7 @@ func (h *TeamHandler) RemoveManagerFromTeam(c *gin.Context) {
 			"success": false,
 			"error":   "Only team managers can add managers",
 		})
+
 		return
 	}
 
