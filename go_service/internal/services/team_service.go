@@ -1,6 +1,8 @@
 package services
 
 import (
+	"context"
+	"errors"
 	"go_service/internal/kafka"
 	"go_service/internal/models"
 	"go_service/internal/redisclient"
@@ -27,51 +29,51 @@ func NewTeamService(db *gorm.DB, producer *kafka.Producer, redisClient *rediscli
 }
 
 // Creates a new team and adds members
-func (s *TeamService) CreateTeam(teamName string, userIDs []uuid.UUID, creatorID uuid.UUID) (*models.Team, []uuid.UUID, error) {
+func (s *TeamService) CreateTeam(ctx context.Context, teamName string, userIDs []uuid.UUID, creatorID uuid.UUID) (*models.Team, []uuid.UUID, error) {
 	team := &models.Team{TeamName: teamName}
-	if err := s.repo.CreateTeam(team); err != nil {
+	if err := s.repo.CreateTeam(ctx, team); err != nil {
 		return nil, nil, err
 	}
 
 	// Add creator as leader
-	leaderRoster := &models.Roster{TeamID: team.ID, UserID: creatorID, IsLeader: true}
-	if err := s.repo.AddMemberToTeam(leaderRoster); err != nil {
+	leaderRoster := models.Roster{TeamID: team.ID, UserID: creatorID, Role: "MANAGER"}
+	if err := s.repo.AddMemberToTeam(ctx, []models.Roster{leaderRoster}); err != nil {
 		return nil, nil, err
 	}
 
-	addedMembers := []uuid.UUID{creatorID}
 	failedMembers := []uuid.UUID{}
-
-	for _, userID := range userIDs {
-		if userID == creatorID {
-			continue
+	if len(userIDs) > 0 {
+		rosters := make([]models.Roster, 0, len(userIDs))
+		for _, userID := range userIDs {
+			rosters = append(rosters, models.Roster{TeamID: team.ID, UserID: userID, Role: "MEMBER"})
 		}
-		roster := &models.Roster{TeamID: team.ID, UserID: userID, IsLeader: false}
-		if err := s.repo.AddMemberToTeam(roster); err != nil {
-			failedMembers = append(failedMembers, userID)
-		} else {
-			addedMembers = append(addedMembers, userID)
+		if err := s.repo.AddMemberToTeam(ctx, rosters); err != nil {
+			// Nếu lỗi, giả sử tất cả đều fail
+			failedMembers = userIDs
 		}
 	}
 
 	return team, failedMembers, nil
 }
 
-// //  adds members to a team with validation
-// func (s *TeamService) AddMemberToTeam(teamID uint64, userIDs []uuid.UUID, currentUserID uuid.UUID) ([]map[string]interface{}, int, int, int, error) {
-//     // Validate team and leadership (omitted for brevity; implement checks)
-//     results := []map[string]interface{}{}
-//     addedCount, existingCount, failedCount := 0, 0, 0
+// adds members to a team with validation
+func (s *TeamService) AddMemberToTeam(ctx context.Context, teamID uuid.UUID, userIDs []uuid.UUID, currentUserID uuid.UUID) (int, int, []uuid.UUID, error) {
+	currentUserRole, err := s.repo.GetUserRoleInTeam(ctx, teamID.String(), currentUserID.String())
+	if err != nil || (currentUserRole != "MANAGER" && currentUserRole != "MAIN_MANAGER") {
+		return 0, len(userIDs), userIDs, errors.New("you are not a manager")
+	}
 
-//     for _, userID := range userIDs {
-//         // Check user exists, not already in team, etc.
-//         // Add to team via repo
-//         // Update counts and results
-//     }
-
-//     if addedCount > 0 && s.producer != nil {
-//         // Emit Kafka event
-//     }
-
-//     return results, addedCount, existingCount, failedCount, nil
-// }
+	addedCount := 0
+	failedMembers := []uuid.UUID{}
+	rosters := make([]models.Roster, 0, len(userIDs))
+	for _, userID := range userIDs {
+		rosters = append(rosters, models.Roster{TeamID: teamID, UserID: userID, Role: "MEMBER"})
+	}
+	if err := s.repo.AddMemberToTeam(ctx, rosters); err != nil {
+		// Nếu lỗi, giả sử tất cả đều fail
+		failedMembers = userIDs
+		return 0, len(userIDs), failedMembers, nil
+	}
+	addedCount = len(userIDs)
+	return addedCount, 0, failedMembers, nil
+}
